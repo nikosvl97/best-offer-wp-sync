@@ -3,7 +3,7 @@
  * Plugin Name: Best Offer WP Sync
  * Plugin URI: https://enviweb.gr
  * Description: WP-CLI command to sync WooCommerce products from Best Offer XML feed. Updates supplier prices and stock levels.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: EnviWeb
  * Author URI: https://enviweb.gr
  * License: GPL v2 or later
@@ -24,7 +24,7 @@ if ( ! defined( 'WPINC' ) ) {
 /**
  * Currently plugin version.
  */
-define( 'ENVIWEB_BESTOFFER_VERSION', '1.0.0' );
+define( 'ENVIWEB_BESTOFFER_VERSION', '1.1.0' );
 define( 'ENVIWEB_BESTOFFER_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'ENVIWEB_BESTOFFER_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 
@@ -51,6 +51,16 @@ function enviweb_bestoffer_woocommerce_missing_notice() {
 }
 
 /**
+ * Plugin activation hook
+ */
+function enviweb_bestoffer_activate() {
+	require_once ENVIWEB_BESTOFFER_PLUGIN_DIR . 'includes/class-bestoffer-database.php';
+	EnviWeb_BestOffer_Database::create_tables();
+	EnviWeb_BestOffer_Database::upgrade_tables();
+}
+register_activation_hook( __FILE__, 'enviweb_bestoffer_activate' );
+
+/**
  * Initialize the plugin
  */
 function enviweb_bestoffer_init() {
@@ -59,17 +69,26 @@ function enviweb_bestoffer_init() {
 		return;
 	}
 
+	// Load required files
+	require_once ENVIWEB_BESTOFFER_PLUGIN_DIR . 'includes/class-bestoffer-database.php';
+	require_once ENVIWEB_BESTOFFER_PLUGIN_DIR . 'includes/class-bestoffer-logger.php';
+	require_once ENVIWEB_BESTOFFER_PLUGIN_DIR . 'includes/class-bestoffer-admin.php';
+	require_once ENVIWEB_BESTOFFER_PLUGIN_DIR . 'includes/class-bestoffer-metabox.php';
+
+	// Check and upgrade database if needed
+	EnviWeb_BestOffer_Database::upgrade_tables();
+
+	// Initialize admin interface
+	if ( is_admin() ) {
+		new EnviWeb_BestOffer_Admin();
+		new EnviWeb_BestOffer_Metabox();
+	}
+
 	// Load WP-CLI command if in CLI context
 	if ( defined( 'WP_CLI' ) && WP_CLI ) {
 		require_once ENVIWEB_BESTOFFER_PLUGIN_DIR . 'includes/class-bestoffer-cli-command.php';
+		WP_CLI::add_command( 'bestoffer', 'EnviWeb_BestOffer_CLI_Command' );
 	}
 }
 add_action( 'plugins_loaded', 'enviweb_bestoffer_init' );
-
-/**
- * Register WP-CLI command
- */
-if ( defined( 'WP_CLI' ) && WP_CLI ) {
-	WP_CLI::add_command( 'bestoffer', 'EnviWeb_BestOffer_CLI_Command' );
-}
 

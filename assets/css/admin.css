@@ -1,0 +1,627 @@
+/**
+ * Best Offer Sync - Admin Styles
+ * Author: EnviWeb (https://enviweb.gr)
+ */
+
+/* Main Admin Wrapper */
+.bestoffer-admin-wrap {
+	background: #f1f1f1;
+	margin: 20px 0 0 -20px;
+	padding: 20px;
+}
+
+.bestoffer-admin-wrap h1 {
+	background: #fff;
+	margin: -20px -20px 20px;
+	padding: 20px;
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+/* Dashboard */
+.bestoffer-dashboard {
+	max-width: 1200px;
+}
+
+/* Stats Grid */
+.bestoffer-stats-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+	gap: 20px;
+	margin-bottom: 30px;
+}
+
+.bestoffer-stat-card {
+	background: #fff;
+	border-radius: 8px;
+	padding: 25px;
+	box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+	display: flex;
+	align-items: center;
+	gap: 20px;
+	transition: transform 0.2s;
+}
+
+.bestoffer-stat-card:hover {
+	transform: translateY(-2px);
+	box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
+}
+
+.bestoffer-stat-icon {
+	font-size: 42px;
+	width: 60px;
+	height: 60px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 50%;
+	background: #f0f0f1;
+	color: #2271b1;
+}
+
+.bestoffer-stat-content h3 {
+	margin: 0;
+	font-size: 32px;
+	font-weight: 700;
+	color: #2271b1;
+}
+
+.bestoffer-stat-content p {
+	margin: 5px 0 0;
+	color: #666;
+	font-size: 14px;
+}
+
+/* Last Sync Section */
+.bestoffer-last-sync {
+	background: #fff;
+	border-radius: 8px;
+	padding: 25px;
+	margin-bottom: 30px;
+	box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+.bestoffer-last-sync h2 {
+	margin-top: 0;
+	padding-bottom: 15px;
+	border-bottom: 2px solid #f0f0f1;
+}
+
+.bestoffer-last-sync-content {
+	display: grid;
+	grid-template-columns: auto 1fr auto;
+	gap: 20px;
+	align-items: start;
+}
+
+.bestoffer-sync-status {
+	display: flex;
+	align-items: center;
+}
+
+.bestoffer-sync-details p {
+	margin: 8px 0;
+}
+
+.bestoffer-sync-stats {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+
+.bestoffer-sync-stats .stat-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 15px;
+	background: #f8f9fa;
+	border-radius: 4px;
+	white-space: nowrap;
+}
+
+.bestoffer-error-message {
+	grid-column: 1 / -1;
+	margin-top: 15px;
+	padding: 15px;
+	background: #fef7f7;
+	border-left: 4px solid #dc3232;
+	border-radius: 4px;
+}
+
+.bestoffer-error-message p {
+	margin: 5px 0 0;
+	color: #dc3232;
+}
+
+/* Status Badges */
+.status-badge {
+	display: inline-block;
+	padding: 6px 15px;
+	border-radius: 20px;
+	font-size: 13px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+}
+
+.status-badge.status-completed {
+	background: #d4edda;
+	color: #155724;
+}
+
+.status-badge.status-running {
+	background: #d1ecf1;
+	color: #0c5460;
+}
+
+.status-badge.status-failed {
+	background: #f8d7da;
+	color: #721c24;
+}
+
+.status-badge.status-timeout {
+	background: #fff3cd;
+	color: #856404;
+}
+
+/* Logs Section */
+.bestoffer-logs-section {
+	background: #fff;
+	border-radius: 8px;
+	padding: 25px;
+	margin-bottom: 30px;
+	box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+.bestoffer-logs-section h2 {
+	margin-top: 0;
+	padding-bottom: 15px;
+	border-bottom: 2px solid #f0f0f1;
+}
+
+.bestoffer-logs-table {
+	margin-top: 20px;
+}
+
+.bestoffer-logs-table th {
+	font-weight: 600;
+	background: #f8f9fa;
+}
+
+.bestoffer-logs-table td {
+	vertical-align: middle;
+}
+
+.bestoffer-error-row td {
+	background: #fef7f7;
+	border-left: 4px solid #dc3232;
+	padding: 12px !important;
+}
+
+.bestoffer-delete-log {
+	color: #dc3232;
+	border-color: #dc3232;
+}
+
+.bestoffer-delete-log:hover {
+	background: #dc3232;
+	color: #fff;
+}
+
+/* Usage Section */
+.bestoffer-usage {
+	background: #fff;
+	border-radius: 8px;
+	padding: 25px;
+	box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+.bestoffer-usage h2 {
+	margin-top: 0;
+}
+
+.bestoffer-usage pre {
+	background: #2c3338;
+	color: #f0f0f1;
+	padding: 15px;
+	border-radius: 4px;
+	overflow-x: auto;
+}
+
+.bestoffer-usage code {
+	font-family: 'Courier New', Courier, monospace;
+	font-size: 14px;
+}
+
+/* Locked Product Styling */
+.stat-locked {
+	background: #fff3cd !important;
+	border-left: 3px solid #ffc107;
+}
+
+.stat-locked .dashicons {
+	color: #856404;
+}
+
+/* Unchanged Product Styling */
+.stat-unchanged {
+	background: #e8f4fd !important;
+	border-left: 3px solid #72aee6;
+}
+
+.stat-unchanged .dashicons {
+	color: #2271b1;
+}
+
+/* Skipped Product Styling */
+.stat-skipped {
+	background: #f0f0f1 !important;
+	border-left: 3px solid #787c82;
+}
+
+.stat-skipped .dashicons {
+	color: #50575e;
+}
+
+.stat-skipped small {
+	display: block;
+	font-size: 11px;
+	color: #50575e;
+	margin-top: 2px;
+}
+
+.skipped-breakdown {
+	display: block;
+	font-size: 11px;
+	color: #666;
+	margin-top: 2px;
+}
+
+/* Metabox Styles */
+.bestoffer-metabox {
+	padding: 15px;
+}
+
+.bestoffer-locked-row {
+	background: #fff3cd !important;
+	border-left: 4px solid #ffc107;
+}
+
+.bestoffer-locked-row td {
+	padding: 12px 8px !important;
+}
+
+.bestoffer-locked-row strong {
+	color: #856404;
+}
+
+.bestoffer-published-row {
+	background: #d4edda !important;
+	border-left: 4px solid #00a32a;
+}
+
+.bestoffer-published-row td {
+	padding: 12px 8px !important;
+}
+
+.bestoffer-published-row strong {
+	color: #00a32a;
+	font-weight: 700;
+}
+
+.bestoffer-metabox-header {
+	margin-bottom: 20px;
+	padding-bottom: 15px;
+	border-bottom: 1px solid #ddd;
+}
+
+.bestoffer-metabox-header code {
+	background: #f0f0f1;
+	padding: 4px 8px;
+	border-radius: 3px;
+	font-size: 13px;
+}
+
+.bestoffer-warning {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 12px;
+	background: #fff3cd;
+	border-left: 4px solid #ffc107;
+	border-radius: 4px;
+	color: #856404;
+}
+
+.bestoffer-history-section h4 {
+	margin-top: 0;
+	margin-bottom: 15px;
+}
+
+.bestoffer-history-table {
+	margin: 0;
+}
+
+.bestoffer-history-table th {
+	background: #f8f9fa;
+	font-weight: 600;
+}
+
+.bestoffer-history-table td {
+	vertical-align: middle;
+}
+
+.bestoffer-history-table code {
+	background: #f0f0f1;
+	padding: 4px 8px;
+	border-radius: 3px;
+	font-size: 12px;
+	display: inline-block;
+}
+
+.bestoffer-history-table .bestoffer-new-value {
+	background: #d4edda;
+	color: #155724;
+	font-weight: 600;
+}
+
+.bestoffer-no-history {
+	padding: 20px;
+	text-align: center;
+	color: #666;
+	font-style: italic;
+	background: #f8f9fa;
+	border-radius: 4px;
+}
+
+/* Settings Page */
+.bestoffer-settings-page {
+	max-width: 900px;
+	background: #fff;
+	padding: 25px;
+	border-radius: 8px;
+	box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+	margin-top: 20px;
+}
+
+.bestoffer-settings-page .form-table {
+	background: #fff;
+}
+
+.bestoffer-settings-page .form-table th {
+	width: 250px;
+	font-weight: 600;
+}
+
+.bestoffer-settings-page .form-table input[type="checkbox"] {
+	margin-right: 8px;
+}
+
+.bestoffer-settings-info {
+	margin-top: 30px;
+	padding-top: 30px;
+	border-top: 2px solid #f0f0f1;
+}
+
+.bestoffer-info-box {
+	background: #f8f9fa;
+	padding: 20px;
+	border-radius: 6px;
+	margin-bottom: 20px;
+	border-left: 4px solid #2271b1;
+}
+
+.bestoffer-info-box h3 {
+	margin-top: 0;
+	color: #2271b1;
+}
+
+.bestoffer-info-box ul {
+	margin-left: 20px;
+}
+
+.bestoffer-info-box ul li {
+	margin-bottom: 8px;
+}
+
+.bestoffer-info-box pre {
+	background: #2c3338;
+	color: #f0f0f1;
+	padding: 15px;
+	border-radius: 4px;
+	overflow-x: auto;
+	margin: 10px 0;
+}
+
+.bestoffer-info-box code {
+	font-family: 'Courier New', Courier, monospace;
+	font-size: 14px;
+}
+
+/* CLI Commands Section */
+.bestoffer-cli-commands {
+	margin-top: 40px;
+	padding-top: 30px;
+	border-top: 3px solid #2271b1;
+}
+
+.bestoffer-cli-commands h2 {
+	color: #2271b1;
+	font-size: 24px;
+	margin-bottom: 25px;
+}
+
+.bestoffer-command-box {
+	background: #fff;
+	padding: 25px;
+	border-radius: 6px;
+	margin-bottom: 25px;
+	border-left: 4px solid #2271b1;
+	box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.bestoffer-command-box h3 {
+	margin-top: 0;
+	color: #1d2327;
+	font-size: 18px;
+	padding-bottom: 10px;
+	border-bottom: 1px solid #e0e0e0;
+}
+
+.bestoffer-command-box p {
+	margin: 15px 0 10px;
+}
+
+.bestoffer-command-box pre {
+	background: #2c3338;
+	color: #f0f0f1;
+	padding: 15px;
+	border-radius: 4px;
+	overflow-x: auto;
+	margin: 10px 0;
+	font-size: 13px;
+	line-height: 1.6;
+}
+
+.bestoffer-command-box code {
+	font-family: 'Courier New', Courier, monospace;
+}
+
+.bestoffer-command-box ul {
+	margin-left: 25px;
+	line-height: 1.8;
+}
+
+.bestoffer-command-box ul li {
+	margin-bottom: 8px;
+}
+
+.bestoffer-command-box ul li code {
+	background: #f0f0f1;
+	padding: 2px 6px;
+	border-radius: 3px;
+	font-size: 12px;
+	color: #2271b1;
+}
+
+.bestoffer-cron-box {
+	border-left-color: #00a32a;
+}
+
+.bestoffer-cron-box h3 {
+	color: #00a32a;
+}
+
+.bestoffer-useful-commands {
+	border-left-color: #9b51e0;
+}
+
+.bestoffer-useful-commands h3 {
+	color: #9b51e0;
+}
+
+.bestoffer-tips-box {
+	background: linear-gradient(135deg, #fff9e6 0%, #fff 100%);
+	border-left-color: #ffc107;
+}
+
+.bestoffer-tips-box h3 {
+	color: #856404;
+}
+
+.bestoffer-tips-box ul {
+	list-style: none;
+	margin-left: 0;
+}
+
+.bestoffer-tips-box ul li {
+	padding-left: 30px;
+	position: relative;
+	margin-bottom: 12px;
+}
+
+.bestoffer-tips-box ul li:before {
+	content: "💡";
+	position: absolute;
+	left: 0;
+	font-size: 18px;
+}
+
+.bestoffer-tips-box strong {
+	color: #856404;
+}
+
+.bestoffer-user-note {
+	background: #f0f6fc;
+	border-left: 4px solid #2271b1;
+	padding: 15px;
+	margin: 15px 0;
+	border-radius: 4px;
+}
+
+.bestoffer-user-note strong {
+	color: #2271b1;
+	font-size: 14px;
+}
+
+/* Responsive */
+@media (max-width: 782px) {
+	.bestoffer-stats-grid {
+		grid-template-columns: 1fr;
+	}
+
+	.bestoffer-last-sync-content {
+		grid-template-columns: 1fr;
+	}
+
+	.bestoffer-sync-stats {
+		flex-direction: row;
+		flex-wrap: wrap;
+	}
+
+	.bestoffer-logs-table {
+		font-size: 12px;
+	}
+
+	.bestoffer-logs-table th,
+	.bestoffer-logs-table td {
+		padding: 8px 5px;
+	}
+
+	.bestoffer-settings-page {
+		padding: 15px;
+	}
+
+	.bestoffer-settings-page .form-table th {
+		width: auto;
+	}
+
+	.bestoffer-command-box {
+		padding: 15px;
+	}
+
+	.bestoffer-command-box pre {
+		font-size: 11px;
+		padding: 10px;
+	}
+
+	.bestoffer-tips-box ul li {
+		padding-left: 25px;
+		font-size: 14px;
+	}
+}
+
+/* Loading Animation */
+.bestoffer-loading {
+	display: inline-block;
+	width: 20px;
+	height: 20px;
+	border: 3px solid rgba(0, 0, 0, 0.1);
+	border-radius: 50%;
+	border-top-color: #2271b1;
+	animation: spin 1s ease-in-out infinite;
+}
+
+@keyframes spin {
+	to { transform: rotate(360deg); }
+}
+
