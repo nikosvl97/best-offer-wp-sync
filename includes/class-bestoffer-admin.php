@@ -198,6 +198,11 @@ class EnviWeb_BestOffer_Admin {
 							<p><strong><?php esc_html_e( 'XML File:', 'best-offer-sync' ); ?></strong> 
 								<?php echo esc_html( basename( $last_sync->xml_file ) ); ?>
 							</p>
+							<?php if ( isset( $last_sync->xml_products ) && $last_sync->xml_products > 0 ) : ?>
+							<p><strong><?php esc_html_e( 'XML Products:', 'best-offer-sync' ); ?></strong> 
+								<?php echo esc_html( number_format( $last_sync->xml_products ) ); ?>
+							</p>
+							<?php endif; ?>
 							<p><strong><?php esc_html_e( 'Execution Time:', 'best-offer-sync' ); ?></strong> 
 								<?php echo esc_html( number_format( $last_sync->execution_time, 2 ) ); ?>s
 							</p>
@@ -257,6 +262,7 @@ class EnviWeb_BestOffer_Admin {
 								<th><?php esc_html_e( 'Date', 'best-offer-sync' ); ?></th>
 								<th><?php esc_html_e( 'Status', 'best-offer-sync' ); ?></th>
 								<th><?php esc_html_e( 'XML File', 'best-offer-sync' ); ?></th>
+								<th><?php esc_html_e( 'XML Products', 'best-offer-sync' ); ?></th>
 								<th><?php esc_html_e( 'Updated', 'best-offer-sync' ); ?></th>
 								<th><?php esc_html_e( 'Unchanged', 'best-offer-sync' ); ?></th>
 								<th><?php esc_html_e( 'Skipped', 'best-offer-sync' ); ?></th>
@@ -280,6 +286,16 @@ class EnviWeb_BestOffer_Admin {
 									</span>
 								</td>
 								<td><?php echo esc_html( basename( $log->xml_file ) ); ?></td>
+								<td>
+									<?php 
+									$xml_products = isset( $log->xml_products ) ? $log->xml_products : 0;
+									if ( $xml_products > 0 ) {
+										echo esc_html( number_format( $xml_products ) );
+									} else {
+										echo '<span style="color: #999;">—</span>';
+									}
+									?>
+								</td>
 								<td><?php echo esc_html( $log->products_updated ); ?></td>
 								<td><?php echo esc_html( isset( $log->products_unchanged ) ? $log->products_unchanged : 0 ); ?></td>
 								<td>
@@ -300,7 +316,7 @@ class EnviWeb_BestOffer_Admin {
 							</tr>
 							<?php if ( ! empty( $log->error_message ) ) : ?>
 							<tr class="bestoffer-error-row">
-								<td colspan="8">
+								<td colspan="12">
 									<strong><?php esc_html_e( 'Error:', 'best-offer-sync' ); ?></strong>
 									<?php echo esc_html( $log->error_message ); ?>
 								</td>
@@ -408,6 +424,31 @@ class EnviWeb_BestOffer_Admin {
 						<pre><code>wp bestoffer sync /path/to/best-offer.xml</code></pre>
 						<p><?php esc_html_e( 'No additional parameters needed. The sync will respect this setting.', 'best-offer-sync' ); ?></p>
 					</div>
+
+					<div class="bestoffer-info-box">
+						<h3><?php esc_html_e( '🛡️ XML Validation & Safety', 'best-offer-sync' ); ?></h3>
+						<p>
+							<strong><?php esc_html_e( 'What it does:', 'best-offer-sync' ); ?></strong><br>
+							<?php esc_html_e( 'Before processing begins, the plugin automatically validates that the XML file contains a reasonable number of products. This prevents processing incomplete or corrupted XML files that could cause issues.', 'best-offer-sync' ); ?>
+						</p>
+						<p>
+							<strong><?php esc_html_e( 'How it works:', 'best-offer-sync' ); ?></strong>
+						</p>
+						<ol>
+							<li><?php esc_html_e( 'Counts products in the XML file', 'best-offer-sync' ); ?></li>
+							<li><?php esc_html_e( 'Compares with your published WooCommerce products', 'best-offer-sync' ); ?></li>
+							<li><?php esc_html_e( 'If XML has significantly fewer products (< 50% of published), waits 30 seconds and retries', 'best-offer-sync' ); ?></li>
+							<li><?php esc_html_e( 'After 3 failed validation attempts, stops the sync to prevent issues', 'best-offer-sync' ); ?></li>
+						</ol>
+						<p>
+							<strong><?php esc_html_e( 'Example scenario:', 'best-offer-sync' ); ?></strong><br>
+							<?php esc_html_e( 'If you have 5,000 published products but the XML only contains 1,000, the plugin will wait and retry, assuming the XML file is still being uploaded or generated. This prevents accidentally unpublishing products or processing incomplete data.', 'best-offer-sync' ); ?>
+						</p>
+						<p>
+							<strong><?php esc_html_e( 'Note:', 'best-offer-sync' ); ?></strong><br>
+							<?php esc_html_e( 'Validation is automatically skipped for resumed syncs (when using --offset) and dry-run mode. You can also manually skip it with --skip-validation flag (not recommended).', 'best-offer-sync' ); ?>
+						</p>
+					</div>
 				</div>
 
 				<!-- WP-CLI Commands Reference -->
@@ -427,6 +468,7 @@ class EnviWeb_BestOffer_Admin {
 							<li><code>--limit=&lt;number&gt;</code> - <?php esc_html_e( 'Process max N products (default: all)', 'best-offer-sync' ); ?></li>
 							<li><code>--user=&lt;id&gt;</code> - <?php esc_html_e( 'Run as specific user ID (default: 390)', 'best-offer-sync' ); ?></li>
 							<li><code>--dry-run</code> - <?php esc_html_e( 'Test without making changes', 'best-offer-sync' ); ?></li>
+							<li><code>--skip-validation</code> - <?php esc_html_e( 'Skip XML product count validation (not recommended)', 'best-offer-sync' ); ?></li>
 						</ul>
 
 						<p><strong><?php esc_html_e( 'Examples:', 'best-offer-sync' ); ?></strong></p>

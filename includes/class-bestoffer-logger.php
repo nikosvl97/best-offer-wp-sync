@@ -53,6 +53,7 @@ class EnviWeb_BestOffer_Logger {
 		$data = array(
 			'sync_date'      => current_time( 'mysql' ),
 			'xml_file'       => $xml_file,
+			'xml_products'   => isset( $params['xml_products'] ) ? $params['xml_products'] : 0,
 			'status'         => 'running',
 			'batch_size'     => isset( $params['batch_size'] ) ? $params['batch_size'] : 100,
 			'offset_start'   => isset( $params['offset'] ) ? $params['offset'] : 0,

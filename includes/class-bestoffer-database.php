@@ -43,6 +43,7 @@ class EnviWeb_BestOffer_Database {
 			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
 			sync_date datetime NOT NULL,
 			xml_file varchar(500) NOT NULL,
+			xml_products int(11) DEFAULT 0,
 			status varchar(20) NOT NULL,
 			products_processed int(11) DEFAULT 0,
 			products_updated int(11) DEFAULT 0,
@@ -94,6 +95,14 @@ class EnviWeb_BestOffer_Database {
 		global $wpdb;
 
 		$table_sync_logs = $wpdb->prefix . self::TABLE_SYNC_LOGS;
+
+		// Check if xml_products column exists
+		$column_check = $wpdb->get_results( "SHOW COLUMNS FROM {$table_sync_logs} LIKE 'xml_products'" );
+		
+		if ( empty( $column_check ) ) {
+			// Add xml_products column
+			$wpdb->query( "ALTER TABLE {$table_sync_logs} ADD COLUMN xml_products int(11) DEFAULT 0 AFTER xml_file" );
+		}
 
 		// Check if products_unchanged column exists
 		$column_check = $wpdb->get_results( "SHOW COLUMNS FROM {$table_sync_logs} LIKE 'products_unchanged'" );

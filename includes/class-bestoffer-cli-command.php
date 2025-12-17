@@ -130,6 +130,9 @@ class EnviWeb_BestOffer_CLI_Command {
 	 * default: 390
 	 * ---
 	 *
+	 * [--skip-validation]
+	 * : Skip XML product count validation (not recommended)
+	 *
 	 * ## EXAMPLES
 	 *
 	 *     # Sync all products from XML file
@@ -146,6 +149,9 @@ class EnviWeb_BestOffer_CLI_Command {
 	 *
 	 *     # Run as specific user
 	 *     wp bestoffer sync /path/to/best-offer.xml --user=390
+	 *
+	 *     # Skip XML validation (not recommended)
+	 *     wp bestoffer sync /path/to/best-offer.xml --skip-validation
 	 *
 	 * @when after_wp_load
 	 */
@@ -201,6 +207,16 @@ class EnviWeb_BestOffer_CLI_Command {
 			return;
 		}
 
+		// Skip XML validation for resumed syncs (offset > 0) or when explicitly skipped
+		$skip_validation = ( $offset > 0 ) || ( isset( $assoc_args['skip-validation'] ) && $assoc_args['skip-validation'] );
+		
+		if ( ! $skip_validation && ! $dry_run ) {
+			// Validate XML file has reasonable product count
+			if ( ! $this->validate_xml_file( $xml_file ) ) {
+				return; // Validation failed after retries
+			}
+		}
+
 		// Set user context for sync operations
 		$original_user_id = get_current_user_id();
 		$user = get_user_by( 'id', $user_id );
@@ -233,14 +249,21 @@ class EnviWeb_BestOffer_CLI_Command {
 			WP_CLI::line( sprintf( 'Ignore in-stock products: ENABLED' ) );
 		}
 
+		// Count XML products for logging (only for first batch)
+		$xml_product_count = 0;
+		if ( $offset === 0 && ! $dry_run ) {
+			$xml_product_count = $this->count_xml_products( $xml_file );
+		}
+
 		// Initialize logger (skip for dry run)
 		if ( ! $dry_run ) {
 			$this->logger = new EnviWeb_BestOffer_Logger();
 			$this->logger->start_sync(
 				$xml_file,
 				array(
-					'batch_size' => $batch_size,
-					'offset'     => $offset,
+					'batch_size'   => $batch_size,
+					'offset'       => $offset,
+					'xml_products' => $xml_product_count,
 				)
 			);
 		}
@@ -507,6 +530,9 @@ class EnviWeb_BestOffer_CLI_Command {
 		$current_price = get_post_meta( $product_id, 'fs_supplier_price', true );
 		$price_changed = ( empty( $current_price ) || (float) $current_price !== $supplier_price );
 
+		// Check if product is draft - draft products must be published even if price unchanged
+		$is_draft = $product->get_status() === 'draft';
+
 		// Don't proceed if dry run
 		if ( $dry_run ) {
 			$post_status = $product->get_status();
@@ -523,6 +549,15 @@ class EnviWeb_BestOffer_CLI_Command {
 				}
 				WP_CLI::line( $message );
 				$this->stats['updated']++;
+			} elseif ( $is_draft ) {
+				// Price unchanged but product is draft - still need to publish
+				WP_CLI::line( sprintf(
+					'[DRY RUN] Would publish draft product #%d (%s) - Price unchanged (€%s) + PUBLISH',
+					$product_id,
+					$supplier_sku,
+					number_format( $supplier_price, 2 )
+				) );
+				$this->stats['updated']++;
 			} else {
 				WP_CLI::line( sprintf(
 					'[DRY RUN] Product #%d (%s) - No price change (€%s), would skip',
@@ -535,8 +570,8 @@ class EnviWeb_BestOffer_CLI_Command {
 			return;
 		}
 
-		// Skip update if price hasn't changed
-		if ( ! $price_changed ) {
+		// Skip update ONLY if price unchanged AND product already published
+		if ( ! $price_changed && ! $is_draft ) {
 			$this->stats['unchanged']++;
 			return;
 		}
@@ -844,5 +879,126 @@ class EnviWeb_BestOffer_CLI_Command {
 		wp_cache_flush();
 
 		WP_CLI::success( 'Product caches cleared!' );
+	}
+
+	/**
+	 * Count total products in XML file
+	 *
+	 * @param string $xml_file Path to XML file
+	 * @return int Number of products
+	 */
+	private function count_xml_products( $xml_file ) {
+		$count = 0;
+		
+		try {
+			$reader = new XMLReader();
+			if ( ! $reader->open( $xml_file ) ) {
+				throw new Exception( 'Failed to open XML file' );
+			}
+
+			// Count product elements
+			while ( $reader->read() ) {
+				if ( $reader->nodeType === XMLReader::ELEMENT && $reader->name === 'product' ) {
+					$count++;
+				}
+			}
+
+			$reader->close();
+		} catch ( Exception $e ) {
+			WP_CLI::warning( sprintf( 'Error counting XML products: %s', $e->getMessage() ) );
+			return 0;
+		}
+
+		return $count;
+	}
+
+	/**
+	 * Count published products in WooCommerce
+	 *
+	 * @return int Number of published products
+	 */
+	private function count_published_products() {
+		$args = array(
+			'status'  => 'publish',
+			'limit'   => -1,
+			'return'  => 'ids',
+		);
+
+		$products = wc_get_products( $args );
+		return count( $products );
+	}
+
+	/**
+	 * Validate XML file has reasonable product count
+	 * Retries if XML appears incomplete
+	 *
+	 * @param string $xml_file Path to XML file
+	 * @param int    $max_retries Maximum retry attempts
+	 * @return bool True if valid, false if invalid after retries
+	 */
+	private function validate_xml_file( $xml_file, $max_retries = 3 ) {
+		$retry_count = 0;
+		$retry_delay = 30; // seconds
+
+		while ( $retry_count < $max_retries ) {
+			// Count products in XML
+			WP_CLI::line( '🔍 Validating XML file...' );
+			$xml_count = $this->count_xml_products( $xml_file );
+			
+			if ( $xml_count === 0 ) {
+				WP_CLI::warning( 'XML file contains 0 products!' );
+				$retry_count++;
+				
+				if ( $retry_count < $max_retries ) {
+					WP_CLI::line( sprintf( '⏳ Waiting %d seconds before retry %d/%d...', $retry_delay, $retry_count + 1, $max_retries ) );
+					sleep( $retry_delay );
+					continue;
+				}
+				
+				WP_CLI::error( 'XML file is empty or invalid after all retries.' );
+				return false;
+			}
+
+			// Count published products in WordPress
+			$published_count = $this->count_published_products();
+
+			WP_CLI::line( sprintf( '📊 XML products: %d', $xml_count ) );
+			WP_CLI::line( sprintf( '📊 Published products: %d', $published_count ) );
+
+			// Validate: XML should have at least 50% of published products
+			// (allows for some products to be unpublished, but catches major issues)
+			$minimum_expected = (int) ( $published_count * 0.5 );
+			
+			if ( $xml_count < $minimum_expected && $published_count > 100 ) {
+				WP_CLI::warning( sprintf(
+					'⚠️  XML appears incomplete! Expected at least %d products, found %d',
+					$minimum_expected,
+					$xml_count
+				) );
+				
+				$retry_count++;
+				
+				if ( $retry_count < $max_retries ) {
+					WP_CLI::line( sprintf( '⏳ Waiting %d seconds before retry %d/%d...', $retry_delay, $retry_count + 1, $max_retries ) );
+					sleep( $retry_delay );
+					continue;
+				}
+				
+				WP_CLI::error( sprintf(
+					'XML validation failed after %d retries. XML has %d products but expected at least %d based on %d published products.',
+					$max_retries,
+					$xml_count,
+					$minimum_expected,
+					$published_count
+				) );
+				return false;
+			}
+
+			// Validation passed
+			WP_CLI::success( sprintf( '✅ XML validation passed! Processing %d products...', $xml_count ) );
+			return true;
+		}
+
+		return false;
 	}
 }
