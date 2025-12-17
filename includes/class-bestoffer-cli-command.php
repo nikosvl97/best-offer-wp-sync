@@ -22,6 +22,16 @@ class EnviWeb_BestOffer_CLI_Command {
 	const MAX_EXECUTION_TIME = 110; // 110 seconds to stay under 120 limit
 
 	/**
+	 * Safety buffer (seconds) - Stop this many seconds before timeout
+	 */
+	const SAFETY_BUFFER = 15; // Stop at 95 seconds to allow cleanup
+
+	/**
+	 * Check frequency - Check timeout every N products
+	 */
+	const TIMEOUT_CHECK_FREQUENCY = 10;
+
+	/**
 	 * Batch size for processing
 	 */
 	const BATCH_SIZE = 100;
@@ -73,6 +83,20 @@ class EnviWeb_BestOffer_CLI_Command {
 	 * @var EnviWeb_BestOffer_Logger
 	 */
 	private $logger;
+
+	/**
+	 * Products processed count (for speed calculation)
+	 *
+	 * @var int
+	 */
+	private $products_checked = 0;
+
+	/**
+	 * Average time per product (calculated dynamically)
+	 *
+	 * @var float
+	 */
+	private $avg_time_per_product = 0;
 
 	/**
 	 * Sync products from Best Offer XML feed
@@ -140,6 +164,10 @@ class EnviWeb_BestOffer_CLI_Command {
 			'not_found'       => 0,
 		);
 
+		// Reset performance tracking
+		$this->products_checked = 0;
+		$this->avg_time_per_product = 0;
+
 		// Parse arguments
 		$xml_file   = $args[0];
 		$batch_size = isset( $assoc_args['batch-size'] ) ? intval( $assoc_args['batch-size'] ) : self::BATCH_SIZE;
@@ -197,6 +225,7 @@ class EnviWeb_BestOffer_CLI_Command {
 		$hpos_enabled = $this->is_hpos_enabled();
 		WP_CLI::line( sprintf( 'WooCommerce storage: %s', $hpos_enabled ? 'HPOS' : 'Legacy' ) );
 		WP_CLI::line( sprintf( 'Stock mode: All products set to BACKORDER' ) );
+		WP_CLI::line( sprintf( 'Smart timeout: %ds limit with %ds safety buffer', self::MAX_EXECUTION_TIME, self::SAFETY_BUFFER ) );
 
 		// Check ignore instock setting
 		$ignore_instock = get_option( 'bestoffer_ignore_instock', false );
@@ -432,6 +461,9 @@ class EnviWeb_BestOffer_CLI_Command {
 			$this->stats['errors']++;
 			return;
 		}
+
+		// Update processing speed metrics for smart timeout prediction
+		$this->update_processing_speed();
 
 		// Check if we should ignore in-stock products
 		$ignore_instock = get_option( 'bestoffer_ignore_instock', false );
@@ -693,13 +725,58 @@ class EnviWeb_BestOffer_CLI_Command {
 	}
 
 	/**
-	 * Check if we're approaching timeout
+	 * Check if we're approaching timeout (with smart prediction)
 	 *
 	 * @return bool
 	 */
 	private function is_timeout_approaching() {
 		$elapsed = microtime( true ) - $this->start_time;
-		return $elapsed >= self::MAX_EXECUTION_TIME;
+		
+		// Hard limit - definitely stop
+		if ( $elapsed >= self::MAX_EXECUTION_TIME ) {
+			return true;
+		}
+		
+		// Smart prediction: Stop early if we're approaching timeout
+		// and probably won't finish the next batch of products in time
+		$safe_limit = self::MAX_EXECUTION_TIME - self::SAFETY_BUFFER;
+		
+		if ( $elapsed >= $safe_limit ) {
+			return true;
+		}
+		
+		// Dynamic prediction: If we know average time per product,
+		// check if we have time for at least TIMEOUT_CHECK_FREQUENCY more products
+		if ( $this->products_checked > 0 && $this->avg_time_per_product > 0 ) {
+			$time_remaining = $safe_limit - $elapsed;
+			$estimated_time_needed = $this->avg_time_per_product * self::TIMEOUT_CHECK_FREQUENCY;
+			
+			if ( $time_remaining < $estimated_time_needed ) {
+				WP_CLI::line( sprintf( 
+					'⚡ Smart timeout: %.2fs remaining, need ~%.2fs for next %d products. Stopping early.',
+					$time_remaining,
+					$estimated_time_needed,
+					self::TIMEOUT_CHECK_FREQUENCY
+				) );
+				return true;
+			}
+		}
+		
+		return false;
+	}
+
+	/**
+	 * Update processing speed metrics
+	 * Call this after processing each product
+	 */
+	private function update_processing_speed() {
+		$this->products_checked++;
+		
+		// Recalculate average every TIMEOUT_CHECK_FREQUENCY products
+		if ( $this->products_checked % self::TIMEOUT_CHECK_FREQUENCY === 0 ) {
+			$elapsed = microtime( true ) - $this->start_time;
+			$this->avg_time_per_product = $elapsed / $this->products_checked;
+		}
 	}
 
 	/**
@@ -707,6 +784,7 @@ class EnviWeb_BestOffer_CLI_Command {
 	 */
 	private function display_stats() {
 		$elapsed = microtime( true ) - $this->start_time;
+		$rate = $this->stats['processed'] > 0 ? $this->stats['processed'] / $elapsed : 0;
 
 		WP_CLI::line( '' );
 		WP_CLI::line( sprintf( '=== Batch #%d Statistics ===', $this->cumulative_stats['batches'] ) );
@@ -718,7 +796,7 @@ class EnviWeb_BestOffer_CLI_Command {
 		WP_CLI::line( sprintf( 'Skipped (stock): %d products', $this->stats['skipped_instock'] ) );
 		WP_CLI::line( sprintf( 'Not Found:       %d products', $this->stats['not_found'] ) );
 		WP_CLI::line( sprintf( 'Errors:          %d products', $this->stats['errors'] ) );
-		WP_CLI::line( sprintf( 'Time:            %.2f seconds', $elapsed ) );
+		WP_CLI::line( sprintf( 'Time:            %.2f seconds (%.1f products/sec)', $elapsed, $rate ) );
 		WP_CLI::line( '' );
 	}
 
