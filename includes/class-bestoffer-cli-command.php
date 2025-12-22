@@ -18,18 +18,19 @@ class EnviWeb_BestOffer_CLI_Command {
 
 	/**
 	 * Maximum execution time per batch (in seconds)
+	 * Set to 0 to disable timeout checks (recommended for LiteSpeed with no timeout issues)
 	 */
-	const MAX_EXECUTION_TIME = 110; // 110 seconds to stay under 120 limit
+	const MAX_EXECUTION_TIME = 0; // Disabled - no timeout limit
 
 	/**
-	 * Safety buffer (seconds) - Stop this many seconds before timeout
+	 * Safety buffer (seconds) - Not used when MAX_EXECUTION_TIME is 0
 	 */
-	const SAFETY_BUFFER = 15; // Stop at 95 seconds to allow cleanup
+	const SAFETY_BUFFER = 0;
 
 	/**
-	 * Check frequency - Check timeout every N products
+	 * Check frequency - Not used when MAX_EXECUTION_TIME is 0
 	 */
-	const TIMEOUT_CHECK_FREQUENCY = 10;
+	const TIMEOUT_CHECK_FREQUENCY = 0;
 
 	/**
 	 * Batch size for processing
@@ -83,6 +84,27 @@ class EnviWeb_BestOffer_CLI_Command {
 	 * @var EnviWeb_BestOffer_Logger
 	 */
 	private $logger;
+
+	/**
+	 * Product lookup cache (supplier_sku => product_id)
+	 *
+	 * @var array
+	 */
+	private $product_lookup_cache = array();
+
+	/**
+	 * Product meta cache (product_id => array of meta)
+	 *
+	 * @var array
+	 */
+	private $product_meta_cache = array();
+
+	/**
+	 * Queued product changes for batch processing
+	 *
+	 * @var array
+	 */
+	private $queued_changes = array();
 
 	/**
 	 * Products processed count (for speed calculation)
@@ -241,12 +263,21 @@ class EnviWeb_BestOffer_CLI_Command {
 		$hpos_enabled = $this->is_hpos_enabled();
 		WP_CLI::line( sprintf( 'WooCommerce storage: %s', $hpos_enabled ? 'HPOS' : 'Legacy' ) );
 		WP_CLI::line( sprintf( 'Stock mode: All products set to BACKORDER' ) );
-		WP_CLI::line( sprintf( 'Smart timeout: %ds limit with %ds safety buffer', self::MAX_EXECUTION_TIME, self::SAFETY_BUFFER ) );
+		if ( self::MAX_EXECUTION_TIME > 0 ) {
+			WP_CLI::line( sprintf( 'Smart timeout: %ds limit with %ds safety buffer', self::MAX_EXECUTION_TIME, self::SAFETY_BUFFER ) );
+		} else {
+			WP_CLI::line( '🚀 Timeout limit: DISABLED - Full speed mode!' );
+		}
 
 		// Check ignore instock setting
 		$ignore_instock = get_option( 'bestoffer_ignore_instock', false );
 		if ( $ignore_instock ) {
 			WP_CLI::line( sprintf( 'Ignore in-stock products: ENABLED' ) );
+		}
+
+		// Build product lookup cache (only for first batch)
+		if ( $offset === 0 ) {
+			$this->build_product_lookup_cache();
 		}
 
 		// Count XML products for logging (only for first batch)
@@ -268,10 +299,17 @@ class EnviWeb_BestOffer_CLI_Command {
 			);
 		}
 
+		// Defer WordPress operations for better performance (only on first batch)
+		if ( $offset === 0 ) {
+			wp_defer_term_counting( true );
+			wp_defer_comment_counting( true );
+			wp_suspend_cache_addition( true );
+			WP_CLI::line( '⚡ Performance mode: Deferred term counting and cache suspension enabled' );
+		}
+
 		// Process XML file
 		$status        = 'completed';
 		$error_message = '';
-		$timeout_occurred = false;
 		
 		try {
 			$this->process_xml_file( $xml_file, $batch_size, $offset, $limit, $dry_run, $hpos_enabled );
@@ -292,13 +330,6 @@ class EnviWeb_BestOffer_CLI_Command {
 			}
 			
 			return;
-		}
-
-		// Check if we hit timeout
-		if ( $this->is_timeout_approaching() ) {
-			$status = 'timeout';
-			$timeout_occurred = true;
-			WP_CLI::warning( 'Sync stopped due to timeout approaching' );
 		}
 
 		// Calculate resume offset and elapsed time
@@ -323,38 +354,27 @@ class EnviWeb_BestOffer_CLI_Command {
 			$this->logger->end_sync( $this->stats, $status, $error_message );
 		}
 
+		// Re-enable WordPress operations and clear caches
+		if ( $offset === 0 ) {
+			wp_defer_term_counting( false );
+			wp_defer_comment_counting( false );
+			wp_suspend_cache_addition( false );
+			
+			// Clear WooCommerce caches
+			if ( function_exists( 'wc_delete_product_transients' ) ) {
+				wc_delete_product_transients();
+			}
+			wp_cache_flush();
+			
+			WP_CLI::line( '🧹 Performance mode disabled, caches cleared' );
+		}
+
 		// Display statistics
 		$this->display_stats();
 
 		// Restore original user
 		if ( $original_user_id ) {
 			wp_set_current_user( $original_user_id );
-		}
-
-		// Auto-resume if timeout occurred
-		if ( $timeout_occurred && ! $dry_run ) {
-			WP_CLI::line( '' );
-			WP_CLI::line( '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━' );
-			WP_CLI::line( sprintf( '🔄 Auto-resuming from product %d...', $resume_offset + 1 ) );
-			WP_CLI::line( '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━' );
-			WP_CLI::line( '' );
-			
-			// Small delay to let things settle
-			sleep( 2 );
-			
-			// Encode cumulative stats to pass to next batch
-			$cumulative_encoded = base64_encode( json_encode( $this->cumulative_stats ) );
-			
-			// Recursively call sync with new offset and cumulative stats
-			$this->sync( array( $xml_file ), array(
-				'batch-size'   => $batch_size,
-				'offset'       => $resume_offset,
-				'limit'        => $limit,
-				'user'         => $user_id,
-				'_cumulative'  => $cumulative_encoded,
-			) );
-			
-			return;
 		}
 
 		// Display cumulative stats if multiple batches were processed
@@ -383,6 +403,119 @@ class EnviWeb_BestOffer_CLI_Command {
 	}
 
 	/**
+	 * Build product lookup cache
+	 * Loads ALL products with supplier_sku into memory for O(1) lookups
+	 *
+	 * @return int Number of products cached
+	 */
+	private function build_product_lookup_cache() {
+		global $wpdb;
+
+		WP_CLI::line( '🔧 Building product lookup cache...' );
+		$cache_start = microtime( true );
+
+		// Load all products with supplier_sku meta in one query
+		$results = $wpdb->get_results(
+			"SELECT post_id, meta_value as supplier_sku 
+			FROM {$wpdb->postmeta} 
+			WHERE meta_key = 'supplier_sku' 
+			AND meta_value != ''"
+		);
+
+		$this->product_lookup_cache = array();
+		foreach ( $results as $row ) {
+			$this->product_lookup_cache[ $row->supplier_sku ] = (int) $row->post_id;
+		}
+
+		$cache_time = microtime( true ) - $cache_start;
+		$count = count( $this->product_lookup_cache );
+		
+		WP_CLI::line( sprintf( 
+			'✅ Cached %d products in %.3f seconds (%.0f products/sec)',
+			$count,
+			$cache_time,
+			$count / max( $cache_time, 0.001 )
+		) );
+
+		return $count;
+	}
+
+	/**
+	 * Bulk load product meta for a batch of product IDs
+	 * Loads all needed meta in ONE query instead of individual queries per product
+	 *
+	 * @param array $product_ids Array of product IDs
+	 */
+	private function bulk_load_product_meta( $product_ids ) {
+		global $wpdb;
+
+		if ( empty( $product_ids ) ) {
+			return;
+		}
+
+		// Clear existing cache for these products
+		foreach ( $product_ids as $id ) {
+			unset( $this->product_meta_cache[ $id ] );
+		}
+
+		// Meta keys we need to check
+		$meta_keys = array(
+			'fs_supplier_price',
+			'_block_xml_update',
+			'_skroutz_block_xml_update',
+			'_block_custom_update',
+			'_stock_status',
+		);
+
+		// Build placeholders for IN clause
+		$placeholders = implode( ',', array_fill( 0, count( $product_ids ), '%d' ) );
+		$meta_key_placeholders = implode( ',', array_fill( 0, count( $meta_keys ), '%s' ) );
+
+		// Prepare query
+		$query = $wpdb->prepare(
+			"SELECT post_id, meta_key, meta_value 
+			FROM {$wpdb->postmeta} 
+			WHERE post_id IN ($placeholders) 
+			AND meta_key IN ($meta_key_placeholders)",
+			array_merge( $product_ids, $meta_keys )
+		);
+
+		$results = $wpdb->get_results( $query );
+
+		// Build cache structure
+		foreach ( $product_ids as $id ) {
+			if ( ! isset( $this->product_meta_cache[ $id ] ) ) {
+				$this->product_meta_cache[ $id ] = array(
+					'fs_supplier_price'         => '',
+					'_block_xml_update'         => '',
+					'_skroutz_block_xml_update' => '',
+					'_block_custom_update'      => '',
+					'_stock_status'             => '',
+				);
+			}
+		}
+
+		// Populate cache with actual values
+		foreach ( $results as $row ) {
+			$this->product_meta_cache[ $row->post_id ][ $row->meta_key ] = $row->meta_value;
+		}
+	}
+
+	/**
+	 * Get cached product meta value
+	 *
+	 * @param int    $product_id Product ID
+	 * @param string $meta_key Meta key
+	 * @return mixed Meta value or empty string if not found
+	 */
+	private function get_cached_meta( $product_id, $meta_key ) {
+		if ( isset( $this->product_meta_cache[ $product_id ][ $meta_key ] ) ) {
+			return $this->product_meta_cache[ $product_id ][ $meta_key ];
+		}
+		return '';
+	}
+
+	/**
 	 * Process XML file
 	 *
 	 * @param string $xml_file Path to XML file
@@ -402,19 +535,13 @@ class EnviWeb_BestOffer_CLI_Command {
 
 		$current_product = 0;
 		$processed_count = 0;
+		$xml_products_batch = array(); // Collect products for batch processing
 
 		// Create progress bar
 		$progress = \WP_CLI\Utils\make_progress_bar( 'Processing products', $limit ? $limit : 1000 );
 
 		// Read XML products one by one
 		while ( $reader->read() ) {
-			// Check execution time
-			if ( $this->is_timeout_approaching() ) {
-				WP_CLI::warning( 'Approaching timeout limit. Stopping processing.' );
-				WP_CLI::line( sprintf( 'Resume from offset: %d', $offset + $processed_count ) );
-				break;
-			}
-
 			// Find product nodes
 			if ( $reader->nodeType == XMLReader::ELEMENT && $reader->name == 'product' ) {
 				// Skip until we reach the offset
@@ -434,10 +561,17 @@ class EnviWeb_BestOffer_CLI_Command {
 				$product_node = simplexml_load_string( $reader->readOuterXML() );
 				
 				if ( $product_node ) {
-					$this->process_product( $product_node, $dry_run, $hpos_enabled );
+					// Collect products for batch processing
+					$xml_products_batch[] = $product_node;
 					$processed_count++;
 					$this->stats['processed']++;
 					$progress->tick();
+
+					// Process batch when we reach batch_size or this is the last product
+					if ( count( $xml_products_batch ) >= $batch_size ) {
+						$this->process_product_batch( $xml_products_batch, $dry_run, $hpos_enabled );
+						$xml_products_batch = array();
+					}
 				}
 
 				$current_product++;
@@ -447,8 +581,142 @@ class EnviWeb_BestOffer_CLI_Command {
 			}
 		}
 
+		// Process any remaining products in the batch
+		if ( ! empty( $xml_products_batch ) ) {
+			$this->process_product_batch( $xml_products_batch, $dry_run, $hpos_enabled );
+		}
+
 		$progress->finish();
 		$reader->close();
+	}
+
+	/**
+	 * Process a batch of products
+	 * First pass: collect all product IDs and load their meta in bulk
+	 * Second pass: process each product with cached data and queue changes
+	 * Third pass: apply all queued changes in a transaction
+	 *
+	 * @param array $xml_products_batch Array of SimpleXMLElement product nodes
+	 * @param bool  $dry_run Dry run mode
+	 * @param bool  $hpos_enabled HPOS status
+	 */
+	private function process_product_batch( $xml_products_batch, $dry_run, $hpos_enabled ) {
+		// First pass: collect all product IDs that exist
+		$product_ids = array();
+		$xml_product_map = array(); // Map product_id to XML node
+		
+		foreach ( $xml_products_batch as $product_node ) {
+			$supplier_sku = (string) $product_node->SKU;
+			
+			if ( empty( $supplier_sku ) ) {
+				continue;
+			}
+			
+			$product_id = $this->find_product_by_supplier_sku( $supplier_sku, $hpos_enabled );
+			
+			if ( $product_id ) {
+				$product_ids[] = $product_id;
+				$xml_product_map[ $product_id ] = $product_node;
+			}
+		}
+
+		// Bulk load meta for all products in this batch
+		if ( ! empty( $product_ids ) ) {
+			$this->bulk_load_product_meta( $product_ids );
+		}
+
+		// Second pass: process each product with cached data (queues changes)
+		$this->queued_changes = array(); // Reset queue
+		foreach ( $xml_products_batch as $product_node ) {
+			$this->process_product( $product_node, $dry_run, $hpos_enabled );
+		}
+
+		// Third pass: apply all queued changes in bulk
+		if ( ! $dry_run && ! empty( $this->queued_changes ) ) {
+			$this->apply_queued_changes( $hpos_enabled );
+		}
+	}
+
+	/**
+	 * Apply all queued product changes in bulk with transaction
+	 *
+	 * @param bool $hpos_enabled HPOS status
+	 */
+	private function apply_queued_changes( $hpos_enabled ) {
+		global $wpdb;
+
+		if ( empty( $this->queued_changes ) ) {
+			return;
+		}
+
+		// Start transaction for safety and performance
+		$wpdb->query( 'START TRANSACTION' );
+
+		try {
+			foreach ( $this->queued_changes as $change ) {
+				$product_id = $change['product_id'];
+				$product = wc_get_product( $product_id );
+
+				if ( ! $product ) {
+					continue;
+				}
+
+				// Apply status change if needed
+				if ( isset( $change['new_status'] ) ) {
+					$product->set_status( $change['new_status'] );
+				}
+
+				// Update fs_supplier_price meta
+				if ( isset( $change['supplier_price'] ) ) {
+					if ( $hpos_enabled ) {
+						$product->update_meta_data( 'fs_supplier_price', $change['supplier_price'] );
+					} else {
+						update_post_meta( $product_id, 'fs_supplier_price', $change['supplier_price'] );
+					}
+				}
+
+				// Set to backorder mode
+				$product->set_manage_stock( false );
+				$product->set_backorders( 'yes' );
+				$product->set_stock_status( 'onbackorder' );
+
+				// Save changes - fires WooCommerce hooks
+				$product->save();
+
+				// For legacy compatibility
+				if ( ! $hpos_enabled ) {
+					update_post_meta( $product_id, '_manage_stock', 'no' );
+					update_post_meta( $product_id, '_backorders', 'yes' );
+					update_post_meta( $product_id, '_stock_status', 'onbackorder' );
+				}
+
+				// Queue logging
+				if ( $this->logger && isset( $change['log_changes'] ) ) {
+					foreach ( $change['log_changes'] as $log_change ) {
+						$this->logger->log_product_change(
+							$product_id,
+							$change['supplier_sku'],
+							$log_change['field'],
+							$log_change['old_value'],
+							$log_change['new_value']
+						);
+					}
+				}
+			}
+
+			// Commit transaction
+			$wpdb->query( 'COMMIT' );
+
+			// Flush queued logs after successful batch
+			if ( $this->logger ) {
+				$this->logger->flush_queued_logs();
+			}
+
+		} catch ( Exception $e ) {
+			// Rollback on error
+			$wpdb->query( 'ROLLBACK' );
+			throw $e;
+		}
 	}
 
 	/**
@@ -488,9 +756,10 @@ class EnviWeb_BestOffer_CLI_Command {
 		// Update processing speed metrics for smart timeout prediction
 		$this->update_processing_speed();
 
-		// Check if we should ignore in-stock products
+		// Check if we should ignore in-stock products (use cached meta for performance)
 		$ignore_instock = get_option( 'bestoffer_ignore_instock', false );
-		if ( $ignore_instock && $product->get_stock_status() === 'instock' ) {
+		$stock_status = $this->get_cached_meta( $product_id, '_stock_status' );
+		if ( $ignore_instock && $stock_status === 'instock' ) {
 			$this->stats['skipped_instock']++;
 			
 			if ( $dry_run ) {
@@ -526,8 +795,8 @@ class EnviWeb_BestOffer_CLI_Command {
 			return;
 		}
 
-		// Check if price has changed
-		$current_price = get_post_meta( $product_id, 'fs_supplier_price', true );
+		// Check if price has changed (use cached meta for performance)
+		$current_price = $this->get_cached_meta( $product_id, 'fs_supplier_price' );
 		$price_changed = ( empty( $current_price ) || (float) $current_price !== $supplier_price );
 
 		// Check if product is draft - draft products must be published even if price unchanged
@@ -593,50 +862,19 @@ class EnviWeb_BestOffer_CLI_Command {
 
 	/**
 	 * Find product by supplier_sku meta
+	 * Uses in-memory cache for O(1) lookups
 	 *
 	 * @param string $supplier_sku Supplier SKU
-	 * @param bool   $hpos_enabled HPOS status
+	 * @param bool   $hpos_enabled HPOS status (unused, kept for compatibility)
 	 * @return int|false Product ID or false if not found
 	 */
 	private function find_product_by_supplier_sku( $supplier_sku, $hpos_enabled ) {
-		global $wpdb;
-
 		// Sanitize input
 		$supplier_sku = sanitize_text_field( $supplier_sku );
 
-		if ( $hpos_enabled ) {
-			// Query using HPOS-compatible method
-			$args = array(
-				'limit'      => 1,
-				'return'     => 'ids',
-				'meta_query' => array(
-					array(
-						'key'     => 'supplier_sku',
-						'value'   => $supplier_sku,
-						'compare' => '=',
-					),
-				),
-			);
-			$products = wc_get_products( $args );
-			
-			if ( ! empty( $products ) ) {
-				return $products[0];
-			}
-		} else {
-			// Legacy query for backward compatibility
-			$product_id = $wpdb->get_var(
-				$wpdb->prepare(
-					"SELECT post_id FROM {$wpdb->postmeta} 
-					WHERE meta_key = %s AND meta_value = %s 
-					LIMIT 1",
-					'supplier_sku',
-					$supplier_sku
-				)
-			);
-
-			if ( $product_id ) {
-				return intval( $product_id );
-			}
+		// Use cache for instant O(1) lookup
+		if ( isset( $this->product_lookup_cache[ $supplier_sku ] ) ) {
+			return $this->product_lookup_cache[ $supplier_sku ];
 		}
 
 		return false;
@@ -644,6 +882,7 @@ class EnviWeb_BestOffer_CLI_Command {
 
 	/**
 	 * Check if product has update locks
+	 * Uses cached meta data for performance
 	 *
 	 * @param int $product_id Product ID
 	 * @return array Lock status and reason
@@ -656,7 +895,8 @@ class EnviWeb_BestOffer_CLI_Command {
 		);
 
 		foreach ( $locks as $meta_key => $reason ) {
-			$lock_value = get_post_meta( $product_id, $meta_key, true );
+			// Use cached meta instead of get_post_meta
+			$lock_value = $this->get_cached_meta( $product_id, $meta_key );
 			
 			// Check if lock is set to true, 1, or 'yes'
 			if ( $lock_value === true || $lock_value === '1' || $lock_value === 1 || $lock_value === 'yes' ) {
@@ -677,6 +917,7 @@ class EnviWeb_BestOffer_CLI_Command {
 
 	/**
 	 * Update product with new data
+	 * Queues changes for batch processing instead of immediate save
 	 *
 	 * @param WC_Product $product WooCommerce product object
 	 * @param string     $supplier_sku Supplier SKU
@@ -686,73 +927,73 @@ class EnviWeb_BestOffer_CLI_Command {
 	private function update_product( $product, $supplier_sku, $supplier_price, $hpos_enabled ) {
 		$product_id = $product->get_id();
 
-		// Get old values for logging
-		$old_price      = get_post_meta( $product_id, 'fs_supplier_price', true );
+		// Get old values for logging (use cached meta)
+		$old_price      = $this->get_cached_meta( $product_id, 'fs_supplier_price' );
 		$old_backorders = $product->get_backorders();
 		$old_stock      = $product->get_stock_status();
 		$old_status     = $product->get_status();
 
+		// Build change queue entry
+		$change = array(
+			'product_id'     => $product_id,
+			'supplier_sku'   => $supplier_sku,
+			'supplier_price' => $supplier_price,
+			'log_changes'    => array(),
+		);
+
 		// If product is draft, publish it
 		$status_changed = false;
 		if ( $old_status === 'draft' ) {
-			$product->set_status( 'publish' );
+			$change['new_status'] = 'publish';
 			$status_changed = true;
 		}
 
-		// Update fs_supplier_price meta
-		if ( $hpos_enabled ) {
-			$product->update_meta_data( 'fs_supplier_price', $supplier_price );
-		} else {
-			update_post_meta( $product_id, 'fs_supplier_price', $supplier_price );
-		}
-
-		// Set to backorder mode (no stock management)
-		$product->set_manage_stock( false );
-		$product->set_backorders( 'yes' );
-		$product->set_stock_status( 'onbackorder' );
-
-		// Save changes - This triggers all WooCommerce hooks:
-		// - woocommerce_update_product
-		// - woocommerce_product_object_updated_props
-		// - save_post_product
-		// - woocommerce_after_product_object_save
-		// And any custom hooks you've added to product save actions
-		$product->save();
-
-		// For legacy compatibility, ensure meta is saved in postmeta table too
-		if ( ! $hpos_enabled ) {
-			update_post_meta( $product_id, '_manage_stock', 'no' );
-			update_post_meta( $product_id, '_backorders', 'yes' );
-			update_post_meta( $product_id, '_stock_status', 'onbackorder' );
-		}
-
-		// Log changes
+		// Queue log changes (only for fields that actually changed)
 		if ( $this->logger ) {
 			// Log price change
 			if ( $old_price != $supplier_price ) {
-				$this->logger->log_product_change( $product_id, $supplier_sku, 'fs_supplier_price', $old_price, $supplier_price );
+				$change['log_changes'][] = array(
+					'field'     => 'fs_supplier_price',
+					'old_value' => $old_price,
+					'new_value' => $supplier_price,
+				);
 			}
 
 			// Log backorders change
 			if ( $old_backorders !== 'yes' ) {
-				$this->logger->log_product_change( $product_id, $supplier_sku, 'backorders', $old_backorders, 'yes' );
+				$change['log_changes'][] = array(
+					'field'     => 'backorders',
+					'old_value' => $old_backorders,
+					'new_value' => 'yes',
+				);
 			}
 
 			// Log stock status change
 			if ( $old_stock !== 'onbackorder' ) {
-				$this->logger->log_product_change( $product_id, $supplier_sku, 'stock_status', $old_stock, 'onbackorder' );
+				$change['log_changes'][] = array(
+					'field'     => 'stock_status',
+					'old_value' => $old_stock,
+					'new_value' => 'onbackorder',
+				);
 			}
 
 			// Log post status change (draft to publish)
 			if ( $status_changed ) {
-				$this->logger->log_product_change( $product_id, $supplier_sku, 'post_status', $old_status, 'publish' );
+				$change['log_changes'][] = array(
+					'field'     => 'post_status',
+					'old_value' => $old_status,
+					'new_value' => 'publish',
+				);
 			}
 		}
+
+		// Add to queue
+		$this->queued_changes[] = $change;
 
 		// Show message if product was published
 		if ( $status_changed ) {
 			WP_CLI::line( sprintf(
-				'  → Product #%d (%s) was DRAFT - now PUBLISHED',
+				'  → Product #%d (%s) was DRAFT - will be PUBLISHED',
 				$product_id,
 				$supplier_sku
 			) );
@@ -761,10 +1002,16 @@ class EnviWeb_BestOffer_CLI_Command {
 
 	/**
 	 * Check if we're approaching timeout (with smart prediction)
+	 * Returns false when MAX_EXECUTION_TIME is 0 (no timeout limit)
 	 *
 	 * @return bool
 	 */
 	private function is_timeout_approaching() {
+		// Timeout checks disabled - run until completion
+		if ( self::MAX_EXECUTION_TIME === 0 ) {
+			return false;
+		}
+		
 		$elapsed = microtime( true ) - $this->start_time;
 		
 		// Hard limit - definitely stop
@@ -807,6 +1054,11 @@ class EnviWeb_BestOffer_CLI_Command {
 	private function update_processing_speed() {
 		$this->products_checked++;
 		
+		// Skip if timeout checks are disabled
+		if ( self::TIMEOUT_CHECK_FREQUENCY === 0 ) {
+			return;
+		}
+		
 		// Recalculate average every TIMEOUT_CHECK_FREQUENCY products
 		if ( $this->products_checked % self::TIMEOUT_CHECK_FREQUENCY === 0 ) {
 			$elapsed = microtime( true ) - $this->start_time;
@@ -820,18 +1072,30 @@ class EnviWeb_BestOffer_CLI_Command {
 	private function display_stats() {
 		$elapsed = microtime( true ) - $this->start_time;
 		$rate = $this->stats['processed'] > 0 ? $this->stats['processed'] / $elapsed : 0;
+		$memory_mb = memory_get_peak_usage( true ) / 1024 / 1024;
 
 		WP_CLI::line( '' );
 		WP_CLI::line( sprintf( '=== Batch #%d Statistics ===', $this->cumulative_stats['batches'] ) );
 		WP_CLI::line( sprintf( 'Processed:       %d products', $this->stats['processed'] ) );
-		WP_CLI::line( sprintf( 'Updated:         %d products', $this->stats['updated'] ) );
-		WP_CLI::line( sprintf( 'Unchanged:       %d products', $this->stats['unchanged'] ) );
+		WP_CLI::line( sprintf( 'Updated:         %d products (%.1f%%)', 
+			$this->stats['updated'], 
+			$this->stats['processed'] > 0 ? ( $this->stats['updated'] / $this->stats['processed'] * 100 ) : 0 
+		) );
+		WP_CLI::line( sprintf( 'Unchanged:       %d products (%.1f%%)', 
+			$this->stats['unchanged'],
+			$this->stats['processed'] > 0 ? ( $this->stats['unchanged'] / $this->stats['processed'] * 100 ) : 0 
+		) );
 		WP_CLI::line( sprintf( 'Locked:          %d products', $this->stats['locked'] ) );
 		WP_CLI::line( sprintf( 'Skipped (empty): %d products', $this->stats['skipped'] ) );
 		WP_CLI::line( sprintf( 'Skipped (stock): %d products', $this->stats['skipped_instock'] ) );
 		WP_CLI::line( sprintf( 'Not Found:       %d products', $this->stats['not_found'] ) );
 		WP_CLI::line( sprintf( 'Errors:          %d products', $this->stats['errors'] ) );
-		WP_CLI::line( sprintf( 'Time:            %.2f seconds (%.1f products/sec)', $elapsed, $rate ) );
+		WP_CLI::line( '' );
+		WP_CLI::line( sprintf( '⚡ Performance:' ) );
+		WP_CLI::line( sprintf( '  Time:          %.2f seconds', $elapsed ) );
+		WP_CLI::line( sprintf( '  Throughput:    %.1f products/sec', $rate ) );
+		WP_CLI::line( sprintf( '  Avg per item:  %.3f seconds', $this->stats['processed'] > 0 ? $elapsed / $this->stats['processed'] : 0 ) );
+		WP_CLI::line( sprintf( '  Memory peak:   %.2f MB', $memory_mb ) );
 		WP_CLI::line( '' );
 	}
 
@@ -839,6 +1103,10 @@ class EnviWeb_BestOffer_CLI_Command {
 	 * Display cumulative statistics (across all batches)
 	 */
 	private function display_cumulative_stats() {
+		$avg_rate = $this->cumulative_stats['processed'] > 0 ? 
+			$this->cumulative_stats['processed'] / $this->cumulative_stats['total_time'] : 0;
+		$memory_mb = memory_get_peak_usage( true ) / 1024 / 1024;
+		
 		WP_CLI::line( '' );
 		WP_CLI::line( '╔════════════════════════════════════════════════╗' );
 		WP_CLI::line( '║          CUMULATIVE SYNC TOTALS                ║' );
@@ -846,15 +1114,25 @@ class EnviWeb_BestOffer_CLI_Command {
 		WP_CLI::line( '' );
 		WP_CLI::line( sprintf( '📦 Total Batches:     %d', $this->cumulative_stats['batches'] ) );
 		WP_CLI::line( sprintf( '📊 Total Processed:   %d products', $this->cumulative_stats['processed'] ) );
-		WP_CLI::line( sprintf( '✅ Total Updated:     %d products', $this->cumulative_stats['updated'] ) );
-		WP_CLI::line( sprintf( '➖ Total Unchanged:   %d products', $this->cumulative_stats['unchanged'] ) );
+		WP_CLI::line( sprintf( '✅ Total Updated:     %d products (%.1f%%)', 
+			$this->cumulative_stats['updated'],
+			$this->cumulative_stats['processed'] > 0 ? ( $this->cumulative_stats['updated'] / $this->cumulative_stats['processed'] * 100 ) : 0
+		) );
+		WP_CLI::line( sprintf( '➖ Total Unchanged:   %d products (%.1f%%)', 
+			$this->cumulative_stats['unchanged'],
+			$this->cumulative_stats['processed'] > 0 ? ( $this->cumulative_stats['unchanged'] / $this->cumulative_stats['processed'] * 100 ) : 0
+		) );
 		WP_CLI::line( sprintf( '🔒 Total Locked:      %d products', $this->cumulative_stats['locked'] ) );
 		WP_CLI::line( sprintf( '⏭️  Total Skipped:     %d products', $this->cumulative_stats['skipped'] ) );
 		WP_CLI::line( sprintf( '📦 Skipped (stock):   %d products', $this->cumulative_stats['skipped_instock'] ) );
 		WP_CLI::line( sprintf( '❌ Total Not Found:   %d products', $this->cumulative_stats['not_found'] ) );
 		WP_CLI::line( sprintf( '⚠️  Total Errors:      %d products', $this->cumulative_stats['errors'] ) );
-		WP_CLI::line( sprintf( '⏱️  Total Time:        %.2f seconds', $this->cumulative_stats['total_time'] ) );
-		WP_CLI::line( sprintf( '⚡ Avg per batch:     %.2f seconds', $this->cumulative_stats['total_time'] / $this->cumulative_stats['batches'] ) );
+		WP_CLI::line( '' );
+		WP_CLI::line( sprintf( '⚡ Performance Summary:' ) );
+		WP_CLI::line( sprintf( '  Total Time:        %.2f seconds', $this->cumulative_stats['total_time'] ) );
+		WP_CLI::line( sprintf( '  Avg per batch:     %.2f seconds', $this->cumulative_stats['total_time'] / $this->cumulative_stats['batches'] ) );
+		WP_CLI::line( sprintf( '  Overall rate:      %.1f products/sec', $avg_rate ) );
+		WP_CLI::line( sprintf( '  Memory peak:       %.2f MB', $memory_mb ) );
 		WP_CLI::line( '' );
 	}
 

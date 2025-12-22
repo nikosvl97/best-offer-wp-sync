@@ -37,6 +37,13 @@ class EnviWeb_BestOffer_Logger {
 	private $stats = array();
 
 	/**
+	 * Queued product changes for batch insert
+	 *
+	 * @var array
+	 */
+	private $queued_logs = array();
+
+	/**
 	 * Start a new sync log
 	 *
 	 * @param string $xml_file XML file path.
@@ -80,6 +87,9 @@ class EnviWeb_BestOffer_Logger {
 			return;
 		}
 
+		// Flush any queued logs before ending
+		$this->flush_queued_logs();
+
 		$execution_time = microtime( true ) - $this->start_time;
 		$table_name     = EnviWeb_BestOffer_Database::get_table_name( EnviWeb_BestOffer_Database::TABLE_SYNC_LOGS );
 
@@ -109,6 +119,7 @@ class EnviWeb_BestOffer_Logger {
 
 	/**
 	 * Log product change
+	 * Queues changes for batch insert for better performance
 	 *
 	 * @param int    $product_id Product ID.
 	 * @param string $supplier_sku Supplier SKU.
@@ -117,27 +128,61 @@ class EnviWeb_BestOffer_Logger {
 	 * @param mixed  $new_value New value.
 	 */
 	public function log_product_change( $product_id, $supplier_sku, $field_changed, $old_value, $new_value ) {
-		global $wpdb;
-
 		// Don't log if values are the same
 		if ( $old_value === $new_value ) {
 			return;
 		}
 
+		// Queue for batch insert
+		$this->queued_logs[] = array(
+			'product_id'    => $product_id,
+			'sync_log_id'   => $this->sync_log_id,
+			'supplier_sku'  => $supplier_sku,
+			'field_changed' => $field_changed,
+			'old_value'     => maybe_serialize( $old_value ),
+			'new_value'     => maybe_serialize( $new_value ),
+			'sync_date'     => current_time( 'mysql' ),
+			'created_at'    => current_time( 'mysql' ),
+		);
+	}
+
+	/**
+	 * Flush queued logs to database
+	 * Performs batch insert for better performance
+	 */
+	public function flush_queued_logs() {
+		global $wpdb;
+
+		if ( empty( $this->queued_logs ) ) {
+			return;
+		}
+
 		$table_name = EnviWeb_BestOffer_Database::get_table_name( EnviWeb_BestOffer_Database::TABLE_PRODUCT_HISTORY );
 
-		$data = array(
-			'product_id'     => $product_id,
-			'sync_log_id'    => $this->sync_log_id,
-			'supplier_sku'   => $supplier_sku,
-			'field_changed'  => $field_changed,
-			'old_value'      => maybe_serialize( $old_value ),
-			'new_value'      => maybe_serialize( $new_value ),
-			'sync_date'      => current_time( 'mysql' ),
-			'created_at'     => current_time( 'mysql' ),
-		);
+		// Build batch insert query
+		$values = array();
+		$placeholders = array();
 
-		$wpdb->insert( $table_name, $data );
+		foreach ( $this->queued_logs as $log ) {
+			$placeholders[] = '(%d, %d, %s, %s, %s, %s, %s, %s)';
+			$values[] = $log['product_id'];
+			$values[] = $log['sync_log_id'];
+			$values[] = $log['supplier_sku'];
+			$values[] = $log['field_changed'];
+			$values[] = $log['old_value'];
+			$values[] = $log['new_value'];
+			$values[] = $log['sync_date'];
+			$values[] = $log['created_at'];
+		}
+
+		$query = "INSERT INTO {$table_name} 
+			(product_id, sync_log_id, supplier_sku, field_changed, old_value, new_value, sync_date, created_at) 
+			VALUES " . implode( ', ', $placeholders );
+
+		$wpdb->query( $wpdb->prepare( $query, $values ) );
+
+		// Clear the queue
+		$this->queued_logs = array();
 	}
 
 	/**
