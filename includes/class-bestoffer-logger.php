@@ -148,7 +148,7 @@ class EnviWeb_BestOffer_Logger {
 
 	/**
 	 * Flush queued logs to database
-	 * Performs batch insert for better performance
+	 * Performs batch insert in chunks to avoid query size limits and locks
 	 */
 	public function flush_queued_logs() {
 		global $wpdb;
@@ -159,27 +159,38 @@ class EnviWeb_BestOffer_Logger {
 
 		$table_name = EnviWeb_BestOffer_Database::get_table_name( EnviWeb_BestOffer_Database::TABLE_PRODUCT_HISTORY );
 
-		// Build batch insert query
-		$values = array();
-		$placeholders = array();
+		// Process in chunks of 50 to avoid large queries
+		$chunks = array_chunk( $this->queued_logs, 50 );
 
-		foreach ( $this->queued_logs as $log ) {
-			$placeholders[] = '(%d, %d, %s, %s, %s, %s, %s, %s)';
-			$values[] = $log['product_id'];
-			$values[] = $log['sync_log_id'];
-			$values[] = $log['supplier_sku'];
-			$values[] = $log['field_changed'];
-			$values[] = $log['old_value'];
-			$values[] = $log['new_value'];
-			$values[] = $log['sync_date'];
-			$values[] = $log['created_at'];
+		foreach ( $chunks as $chunk ) {
+			try {
+				// Build batch insert query for this chunk
+				$values = array();
+				$placeholders = array();
+
+				foreach ( $chunk as $log ) {
+					$placeholders[] = '(%d, %d, %s, %s, %s, %s, %s, %s)';
+					$values[] = $log['product_id'];
+					$values[] = $log['sync_log_id'];
+					$values[] = $log['supplier_sku'];
+					$values[] = $log['field_changed'];
+					$values[] = $log['old_value'];
+					$values[] = $log['new_value'];
+					$values[] = $log['sync_date'];
+					$values[] = $log['created_at'];
+				}
+
+				$query = "INSERT INTO {$table_name} 
+					(product_id, sync_log_id, supplier_sku, field_changed, old_value, new_value, sync_date, created_at) 
+					VALUES " . implode( ', ', $placeholders );
+
+				$wpdb->query( $wpdb->prepare( $query, $values ) );
+
+			} catch ( Exception $e ) {
+				// Log error but continue - don't fail sync because of logging
+				error_log( 'BestOffer Logger Error: ' . $e->getMessage() );
+			}
 		}
-
-		$query = "INSERT INTO {$table_name} 
-			(product_id, sync_log_id, supplier_sku, field_changed, old_value, new_value, sync_date, created_at) 
-			VALUES " . implode( ', ', $placeholders );
-
-		$wpdb->query( $wpdb->prepare( $query, $values ) );
 
 		// Clear the queue
 		$this->queued_logs = array();

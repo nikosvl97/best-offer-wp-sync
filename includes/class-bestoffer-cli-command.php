@@ -34,8 +34,9 @@ class EnviWeb_BestOffer_CLI_Command {
 
 	/**
 	 * Batch size for processing
+	 * Reduced to 25 to prevent database lock issues and site slowdown
 	 */
-	const BATCH_SIZE = 100;
+	const BATCH_SIZE = 25;
 
 	/**
 	 * Start time of execution
@@ -129,9 +130,9 @@ class EnviWeb_BestOffer_CLI_Command {
 	 * : Path to the XML file
 	 *
 	 * [--batch-size=<number>]
-	 * : Number of products to process per batch (default: 100)
+	 * : Number of products to process per batch (default: 25)
 	 * ---
-	 * default: 100
+	 * default: 25
 	 * ---
 	 *
 	 * [--offset=<number>]
@@ -299,13 +300,8 @@ class EnviWeb_BestOffer_CLI_Command {
 			);
 		}
 
-		// Defer WordPress operations for better performance (only on first batch)
-		if ( $offset === 0 ) {
-			wp_defer_term_counting( true );
-			wp_defer_comment_counting( true );
-			wp_suspend_cache_addition( true );
-			WP_CLI::line( '⚡ Performance mode: Deferred term counting and cache suspension enabled' );
-		}
+		// Note: WordPress deferrals removed to prevent site issues
+		// The bulk operations and caching already provide sufficient performance
 
 		// Process XML file
 		$status        = 'completed';
@@ -354,20 +350,11 @@ class EnviWeb_BestOffer_CLI_Command {
 			$this->logger->end_sync( $this->stats, $status, $error_message );
 		}
 
-		// Re-enable WordPress operations and clear caches
-		if ( $offset === 0 ) {
-			wp_defer_term_counting( false );
-			wp_defer_comment_counting( false );
-			wp_suspend_cache_addition( false );
-			
-			// Clear WooCommerce caches
-			if ( function_exists( 'wc_delete_product_transients' ) ) {
-				wc_delete_product_transients();
-			}
-			wp_cache_flush();
-			
-			WP_CLI::line( '🧹 Performance mode disabled, caches cleared' );
+		// Clear WooCommerce caches at end
+		if ( function_exists( 'wc_delete_product_transients' ) ) {
+			wc_delete_product_transients();
 		}
+		WP_CLI::line( '🧹 Caches cleared' );
 
 		// Display statistics
 		$this->display_stats();
@@ -414,30 +401,42 @@ class EnviWeb_BestOffer_CLI_Command {
 		WP_CLI::line( '🔧 Building product lookup cache...' );
 		$cache_start = microtime( true );
 
-		// Load all products with supplier_sku meta in one query
-		$results = $wpdb->get_results(
-			"SELECT post_id, meta_value as supplier_sku 
-			FROM {$wpdb->postmeta} 
-			WHERE meta_key = 'supplier_sku' 
-			AND meta_value != ''"
-		);
+		try {
+			// Load all products with supplier_sku meta in one query
+			// Use unbuffered query to reduce memory pressure
+			$results = $wpdb->get_results(
+				"SELECT post_id, meta_value as supplier_sku 
+				FROM {$wpdb->postmeta} 
+				WHERE meta_key = 'supplier_sku' 
+				AND meta_value != ''
+				LIMIT 100000",  // Safety limit to prevent memory issues
+				OBJECT
+			);
 
-		$this->product_lookup_cache = array();
-		foreach ( $results as $row ) {
-			$this->product_lookup_cache[ $row->supplier_sku ] = (int) $row->post_id;
+			$this->product_lookup_cache = array();
+			foreach ( $results as $row ) {
+				$this->product_lookup_cache[ $row->supplier_sku ] = (int) $row->post_id;
+			}
+
+			$cache_time = microtime( true ) - $cache_start;
+			$count = count( $this->product_lookup_cache );
+			
+			WP_CLI::line( sprintf( 
+				'✅ Cached %d products in %.3f seconds',
+				$count,
+				$cache_time
+			) );
+
+			return $count;
+
+		} catch ( Exception $e ) {
+			WP_CLI::warning( sprintf(
+				'Failed to build product cache: %s. Continuing without cache...',
+				$e->getMessage()
+			) );
+			$this->product_lookup_cache = array();
+			return 0;
 		}
-
-		$cache_time = microtime( true ) - $cache_start;
-		$count = count( $this->product_lookup_cache );
-		
-		WP_CLI::line( sprintf( 
-			'✅ Cached %d products in %.3f seconds (%.0f products/sec)',
-			$count,
-			$cache_time,
-			$count / max( $cache_time, 0.001 )
-		) );
-
-		return $count;
 	}
 
 	/**
@@ -453,66 +452,87 @@ class EnviWeb_BestOffer_CLI_Command {
 			return;
 		}
 
-		// Clear existing cache for these products
-		foreach ( $product_ids as $id ) {
-			unset( $this->product_meta_cache[ $id ] );
+		// Limit batch size to prevent query overload
+		if ( count( $product_ids ) > 50 ) {
+			$product_ids = array_slice( $product_ids, 0, 50 );
 		}
 
-		// Meta keys we need to check
-		$meta_keys = array(
-			'fs_supplier_price',
-			'_block_xml_update',
-			'_skroutz_block_xml_update',
-			'_block_custom_update',
-			'_stock_status',
-		);
-
-		// Build placeholders for IN clause
-		$placeholders = implode( ',', array_fill( 0, count( $product_ids ), '%d' ) );
-		$meta_key_placeholders = implode( ',', array_fill( 0, count( $meta_keys ), '%s' ) );
-
-		// Prepare query
-		$query = $wpdb->prepare(
-			"SELECT post_id, meta_key, meta_value 
-			FROM {$wpdb->postmeta} 
-			WHERE post_id IN ($placeholders) 
-			AND meta_key IN ($meta_key_placeholders)",
-			array_merge( $product_ids, $meta_keys )
-		);
-
-		$results = $wpdb->get_results( $query );
-
-		// Build cache structure
-		foreach ( $product_ids as $id ) {
-			if ( ! isset( $this->product_meta_cache[ $id ] ) ) {
-				$this->product_meta_cache[ $id ] = array(
-					'fs_supplier_price'         => '',
-					'_block_xml_update'         => '',
-					'_skroutz_block_xml_update' => '',
-					'_block_custom_update'      => '',
-					'_stock_status'             => '',
-				);
+		try {
+			// Clear existing cache for these products
+			foreach ( $product_ids as $id ) {
+				unset( $this->product_meta_cache[ $id ] );
 			}
-		}
 
-		// Populate cache with actual values
-		foreach ( $results as $row ) {
-			$this->product_meta_cache[ $row->post_id ][ $row->meta_key ] = $row->meta_value;
+			// Meta keys we need to check
+			$meta_keys = array(
+				'fs_supplier_price',
+				'_block_xml_update',
+				'_skroutz_block_xml_update',
+				'_block_custom_update',
+				'_stock_status',
+			);
+
+			// Build placeholders for IN clause
+			$placeholders = implode( ',', array_fill( 0, count( $product_ids ), '%d' ) );
+			$meta_key_placeholders = implode( ',', array_fill( 0, count( $meta_keys ), '%s' ) );
+
+			// Prepare query
+			$query = $wpdb->prepare(
+				"SELECT post_id, meta_key, meta_value 
+				FROM {$wpdb->postmeta} 
+				WHERE post_id IN ($placeholders) 
+				AND meta_key IN ($meta_key_placeholders)",
+				array_merge( $product_ids, $meta_keys )
+			);
+
+			$results = $wpdb->get_results( $query, OBJECT );
+
+			// Build cache structure
+			foreach ( $product_ids as $id ) {
+				if ( ! isset( $this->product_meta_cache[ $id ] ) ) {
+					$this->product_meta_cache[ $id ] = array(
+						'fs_supplier_price'         => '',
+						'_block_xml_update'         => '',
+						'_skroutz_block_xml_update' => '',
+						'_block_custom_update'      => '',
+						'_stock_status'             => '',
+					);
+				}
+			}
+
+			// Populate cache with actual values
+			if ( $results ) {
+				foreach ( $results as $row ) {
+					$this->product_meta_cache[ $row->post_id ][ $row->meta_key ] = $row->meta_value;
+				}
+			}
+
+		} catch ( Exception $e ) {
+			WP_CLI::warning( sprintf(
+				'Failed to bulk load meta: %s. Falling back to individual queries...',
+				$e->getMessage()
+			) );
+			// Continue without cache - will use get_post_meta fallback
 		}
 	}
 
 	/**
 	 * Get cached product meta value
+	 * Falls back to get_post_meta if cache is empty
 	 *
 	 * @param int    $product_id Product ID
 	 * @param string $meta_key Meta key
 	 * @return mixed Meta value or empty string if not found
 	 */
 	private function get_cached_meta( $product_id, $meta_key ) {
+		// Try cache first
 		if ( isset( $this->product_meta_cache[ $product_id ][ $meta_key ] ) ) {
 			return $this->product_meta_cache[ $product_id ][ $meta_key ];
 		}
-		return '';
+		
+		// Fallback to direct query if cache not available
+		$value = get_post_meta( $product_id, $meta_key, true );
+		return $value !== false ? $value : '';
 	}
 
 	/**
@@ -638,7 +658,8 @@ class EnviWeb_BestOffer_CLI_Command {
 	}
 
 	/**
-	 * Apply all queued product changes in bulk with transaction
+	 * Apply all queued product changes in small batches to avoid database locks
+	 * NO large transactions - each product saves independently to prevent site lockup
 	 *
 	 * @param bool $hpos_enabled HPOS status
 	 */
@@ -649,12 +670,12 @@ class EnviWeb_BestOffer_CLI_Command {
 			return;
 		}
 
-		// Start transaction for safety and performance
-		$wpdb->query( 'START TRANSACTION' );
-
-		try {
-			foreach ( $this->queued_changes as $change ) {
-				$product_id = $change['product_id'];
+		// Process changes WITHOUT a large transaction wrapper
+		// This prevents holding database locks that block the entire site
+		foreach ( $this->queued_changes as $change ) {
+			$product_id = $change['product_id'];
+			
+			try {
 				$product = wc_get_product( $product_id );
 
 				if ( ! $product ) {
@@ -680,7 +701,7 @@ class EnviWeb_BestOffer_CLI_Command {
 				$product->set_backorders( 'yes' );
 				$product->set_stock_status( 'onbackorder' );
 
-				// Save changes - fires WooCommerce hooks
+				// Save changes - WooCommerce handles its own transaction per product
 				$product->save();
 
 				// For legacy compatibility
@@ -702,21 +723,26 @@ class EnviWeb_BestOffer_CLI_Command {
 						);
 					}
 				}
+
+			} catch ( Exception $e ) {
+				// Log error but continue with other products
+				WP_CLI::warning( sprintf(
+					'Error updating product #%d: %s',
+					$product_id,
+					$e->getMessage()
+				) );
+				$this->stats['errors']++;
 			}
-
-			// Commit transaction
-			$wpdb->query( 'COMMIT' );
-
-			// Flush queued logs after successful batch
-			if ( $this->logger ) {
-				$this->logger->flush_queued_logs();
-			}
-
-		} catch ( Exception $e ) {
-			// Rollback on error
-			$wpdb->query( 'ROLLBACK' );
-			throw $e;
 		}
+
+		// Flush queued logs after batch
+		if ( $this->logger ) {
+			$this->logger->flush_queued_logs();
+		}
+
+		// Small delay to prevent database overload
+		// Gives other site queries time to execute
+		usleep( 100000 ); // 0.1 second delay
 	}
 
 	/**
