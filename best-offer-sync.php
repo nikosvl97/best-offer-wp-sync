@@ -3,7 +3,7 @@
  * Plugin Name: Best Offer WP Sync
  * Plugin URI: https://enviweb.gr
  * Description: WP-CLI command to sync WooCommerce products from Best Offer XML feed. Updates supplier prices and stock levels.
- * Version: 1.1.0
+ * Version: 1.4.0
  * Author: EnviWeb
  * Author URI: https://enviweb.gr
  * License: GPL v2 or later
@@ -24,7 +24,7 @@ if ( ! defined( 'WPINC' ) ) {
 /**
  * Currently plugin version.
  */
-define( 'ENVIWEB_BESTOFFER_VERSION', '1.1.0' );
+define( 'ENVIWEB_BESTOFFER_VERSION', '1.4.0' );
 define( 'ENVIWEB_BESTOFFER_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'ENVIWEB_BESTOFFER_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 
@@ -72,8 +72,11 @@ function enviweb_bestoffer_init() {
 	// Load required files
 	require_once ENVIWEB_BESTOFFER_PLUGIN_DIR . 'includes/class-bestoffer-database.php';
 	require_once ENVIWEB_BESTOFFER_PLUGIN_DIR . 'includes/class-bestoffer-logger.php';
+	require_once ENVIWEB_BESTOFFER_PLUGIN_DIR . 'includes/class-bestoffer-settings.php';
+	require_once ENVIWEB_BESTOFFER_PLUGIN_DIR . 'includes/class-bestoffer-product-creator.php';
 	require_once ENVIWEB_BESTOFFER_PLUGIN_DIR . 'includes/class-bestoffer-admin.php';
 	require_once ENVIWEB_BESTOFFER_PLUGIN_DIR . 'includes/class-bestoffer-metabox.php';
+	require_once ENVIWEB_BESTOFFER_PLUGIN_DIR . 'includes/class-bestoffer-ajax-sync.php';
 
 	// Check and upgrade database if needed
 	EnviWeb_BestOffer_Database::upgrade_tables();
@@ -82,6 +85,7 @@ function enviweb_bestoffer_init() {
 	if ( is_admin() ) {
 		new EnviWeb_BestOffer_Admin();
 		new EnviWeb_BestOffer_Metabox();
+		new EnviWeb_BestOffer_AJAX_Sync();
 	}
 
 	// Load WP-CLI command if in CLI context

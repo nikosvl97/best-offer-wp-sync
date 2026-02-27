@@ -44,7 +44,16 @@ class EnviWeb_BestOffer_Metabox {
 	public function render_metabox( $post ) {
 		$product_id   = $post->ID;
 		$supplier_sku = get_post_meta( $product_id, 'supplier_sku', true );
-		$history      = EnviWeb_BestOffer_Logger::get_product_history( $product_id, 50 );
+
+		// Pagination settings
+		$per_page     = 20;
+		$current_page = isset( $_GET['history_page'] ) ? max( 1, intval( $_GET['history_page'] ) ) : 1;
+		$offset       = ( $current_page - 1 ) * $per_page;
+
+		// Get total count and paginated history
+		$total_count  = $this->get_product_history_count( $product_id );
+		$total_pages  = ceil( $total_count / $per_page );
+		$history      = $this->get_product_history_paginated( $product_id, $per_page, $offset );
 
 		?>
 		<div class="bestoffer-metabox">
@@ -64,7 +73,10 @@ class EnviWeb_BestOffer_Metabox {
 
 			<?php if ( ! empty( $history ) ) : ?>
 				<div class="bestoffer-history-section">
-					<h4><?php esc_html_e( 'Sync History', 'best-offer-sync' ); ?></h4>
+					<h4>
+						<?php esc_html_e( 'Sync History', 'best-offer-sync' ); ?>
+						<span class="bestoffer-history-count">(<?php echo esc_html( number_format( $total_count ) ); ?> <?php esc_html_e( 'records', 'best-offer-sync' ); ?>)</span>
+					</h4>
 					<table class="widefat bestoffer-history-table">
 						<thead>
 							<tr>
@@ -75,7 +87,7 @@ class EnviWeb_BestOffer_Metabox {
 							</tr>
 						</thead>
 						<tbody>
-							<?php foreach ( $history as $record ) : 
+							<?php foreach ( $history as $record ) :
 								$row_class = '';
 								if ( 'product_locked' === $record->field_changed ) {
 									$row_class = 'bestoffer-locked-row';
@@ -108,6 +120,39 @@ class EnviWeb_BestOffer_Metabox {
 							<?php endforeach; ?>
 						</tbody>
 					</table>
+
+					<?php if ( $total_pages > 1 ) : ?>
+					<div class="bestoffer-metabox-pagination">
+						<?php
+						$base_url = admin_url( 'post.php?post=' . $product_id . '&action=edit' );
+
+						// Previous page link
+						if ( $current_page > 1 ) :
+							$prev_url = add_query_arg( 'history_page', $current_page - 1, $base_url ) . '#bestoffer_sync_history';
+							?>
+							<a href="<?php echo esc_url( $prev_url ); ?>" class="button">&laquo; <?php esc_html_e( 'Previous', 'best-offer-sync' ); ?></a>
+						<?php endif; ?>
+
+						<span class="bestoffer-page-info">
+							<?php
+							printf(
+								/* translators: 1: current page, 2: total pages */
+								esc_html__( 'Page %1$d of %2$d', 'best-offer-sync' ),
+								$current_page,
+								$total_pages
+							);
+							?>
+						</span>
+
+						<?php
+						// Next page link
+						if ( $current_page < $total_pages ) :
+							$next_url = add_query_arg( 'history_page', $current_page + 1, $base_url ) . '#bestoffer_sync_history';
+							?>
+							<a href="<?php echo esc_url( $next_url ); ?>" class="button"><?php esc_html_e( 'Next', 'best-offer-sync' ); ?> &raquo;</a>
+						<?php endif; ?>
+					</div>
+					<?php endif; ?>
 				</div>
 			<?php else : ?>
 				<p class="bestoffer-no-history">
@@ -116,6 +161,51 @@ class EnviWeb_BestOffer_Metabox {
 			<?php endif; ?>
 		</div>
 		<?php
+	}
+
+	/**
+	 * Get product history count
+	 *
+	 * @param int $product_id Product ID.
+	 * @return int Total count
+	 */
+	private function get_product_history_count( $product_id ) {
+		global $wpdb;
+
+		$table_name = EnviWeb_BestOffer_Database::get_table_name( EnviWeb_BestOffer_Database::TABLE_PRODUCT_HISTORY );
+
+		return (int) $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT COUNT(*) FROM {$table_name} WHERE product_id = %d",
+				$product_id
+			)
+		);
+	}
+
+	/**
+	 * Get paginated product history
+	 *
+	 * @param int $product_id Product ID.
+	 * @param int $limit      Number of records per page.
+	 * @param int $offset     Offset for pagination.
+	 * @return array
+	 */
+	private function get_product_history_paginated( $product_id, $limit, $offset ) {
+		global $wpdb;
+
+		$table_name = EnviWeb_BestOffer_Database::get_table_name( EnviWeb_BestOffer_Database::TABLE_PRODUCT_HISTORY );
+
+		return $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT * FROM {$table_name}
+				WHERE product_id = %d
+				ORDER BY sync_date DESC
+				LIMIT %d OFFSET %d",
+				$product_id,
+				$limit,
+				$offset
+			)
+		);
 	}
 
 	/**

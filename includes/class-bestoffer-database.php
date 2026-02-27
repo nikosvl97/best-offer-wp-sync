@@ -61,7 +61,8 @@ class EnviWeb_BestOffer_Database {
 			created_at datetime NOT NULL,
 			PRIMARY KEY  (id),
 			KEY sync_date (sync_date),
-			KEY status (status)
+			KEY status (status),
+			KEY status_date (status, sync_date)
 		) $charset_collate;";
 
 		// Product sync history table
@@ -80,7 +81,8 @@ class EnviWeb_BestOffer_Database {
 			KEY product_id (product_id),
 			KEY sync_log_id (sync_log_id),
 			KEY supplier_sku (supplier_sku),
-			KEY sync_date (sync_date)
+			KEY sync_date (sync_date),
+			KEY product_date (product_id, sync_date)
 		) $charset_collate;";
 
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
@@ -89,16 +91,17 @@ class EnviWeb_BestOffer_Database {
 	}
 
 	/**
-	 * Upgrade database tables to add new columns
+	 * Upgrade database tables to add new columns and indexes
 	 */
 	public static function upgrade_tables() {
 		global $wpdb;
 
 		$table_sync_logs = $wpdb->prefix . self::TABLE_SYNC_LOGS;
+		$table_product_history = $wpdb->prefix . self::TABLE_PRODUCT_HISTORY;
 
 		// Check if xml_products column exists
 		$column_check = $wpdb->get_results( "SHOW COLUMNS FROM {$table_sync_logs} LIKE 'xml_products'" );
-		
+
 		if ( empty( $column_check ) ) {
 			// Add xml_products column
 			$wpdb->query( "ALTER TABLE {$table_sync_logs} ADD COLUMN xml_products int(11) DEFAULT 0 AFTER xml_file" );
@@ -106,7 +109,7 @@ class EnviWeb_BestOffer_Database {
 
 		// Check if products_unchanged column exists
 		$column_check = $wpdb->get_results( "SHOW COLUMNS FROM {$table_sync_logs} LIKE 'products_unchanged'" );
-		
+
 		if ( empty( $column_check ) ) {
 			// Add products_unchanged column
 			$wpdb->query( "ALTER TABLE {$table_sync_logs} ADD COLUMN products_unchanged int(11) DEFAULT 0 AFTER products_updated" );
@@ -114,11 +117,121 @@ class EnviWeb_BestOffer_Database {
 
 		// Check if products_skipped_instock column exists
 		$column_check = $wpdb->get_results( "SHOW COLUMNS FROM {$table_sync_logs} LIKE 'products_skipped_instock'" );
-		
+
 		if ( empty( $column_check ) ) {
 			// Add products_skipped_instock column
 			$wpdb->query( "ALTER TABLE {$table_sync_logs} ADD COLUMN products_skipped_instock int(11) DEFAULT 0 AFTER products_skipped" );
 		}
+
+		// Check if products_created column exists (v1.2.0+)
+		$column_check = $wpdb->get_results( "SHOW COLUMNS FROM {$table_sync_logs} LIKE 'products_created'" );
+
+		if ( empty( $column_check ) ) {
+			// Add products_created column
+			$wpdb->query( "ALTER TABLE {$table_sync_logs} ADD COLUMN products_created int(11) DEFAULT 0 AFTER products_updated" );
+		}
+
+		// Check if products_created_as_draft column exists (v1.2.0+)
+		$column_check = $wpdb->get_results( "SHOW COLUMNS FROM {$table_sync_logs} LIKE 'products_created_as_draft'" );
+
+		if ( empty( $column_check ) ) {
+			// Add products_created_as_draft column
+			$wpdb->query( "ALTER TABLE {$table_sync_logs} ADD COLUMN products_created_as_draft int(11) DEFAULT 0 AFTER products_created" );
+		}
+
+		// Check if products_auto_drafted column exists (v1.2.0+)
+		$column_check = $wpdb->get_results( "SHOW COLUMNS FROM {$table_sync_logs} LIKE 'products_auto_drafted'" );
+
+		if ( empty( $column_check ) ) {
+			// Add products_auto_drafted column
+			$wpdb->query( "ALTER TABLE {$table_sync_logs} ADD COLUMN products_auto_drafted int(11) DEFAULT 0 AFTER products_created_as_draft" );
+		}
+
+		// Check if products_claimed column exists (v1.2.1+)
+		$column_check = $wpdb->get_results( "SHOW COLUMNS FROM {$table_sync_logs} LIKE 'products_claimed'" );
+
+		if ( empty( $column_check ) ) {
+			// Add products_claimed column
+			$wpdb->query( "ALTER TABLE {$table_sync_logs} ADD COLUMN products_claimed int(11) DEFAULT 0 AFTER products_created_as_draft" );
+		}
+
+		// Check if products_published column exists (v1.2.2+) - tracks draft products published during sync
+		$column_check = $wpdb->get_results( "SHOW COLUMNS FROM {$table_sync_logs} LIKE 'products_published'" );
+
+		if ( empty( $column_check ) ) {
+			// Add products_published column
+			$wpdb->query( "ALTER TABLE {$table_sync_logs} ADD COLUMN products_published int(11) DEFAULT 0 AFTER products_auto_drafted" );
+		}
+
+		// Add composite indexes for performance (if not exists)
+		self::add_indexes_if_not_exist();
+	}
+
+	/**
+	 * Add composite indexes if they don't exist
+	 * These indexes dramatically improve query performance
+	 */
+	public static function add_indexes_if_not_exist() {
+		global $wpdb;
+
+		$table_sync_logs = $wpdb->prefix . self::TABLE_SYNC_LOGS;
+		$table_product_history = $wpdb->prefix . self::TABLE_PRODUCT_HISTORY;
+
+		// Check and add status_date index on sync_logs
+		$index_check = $wpdb->get_results( "SHOW INDEX FROM {$table_sync_logs} WHERE Key_name = 'status_date'" );
+		if ( empty( $index_check ) ) {
+			$wpdb->query( "ALTER TABLE {$table_sync_logs} ADD INDEX status_date (status, sync_date)" );
+		}
+
+		// Check and add product_date index on product_history
+		$index_check = $wpdb->get_results( "SHOW INDEX FROM {$table_product_history} WHERE Key_name = 'product_date'" );
+		if ( empty( $index_check ) ) {
+			$wpdb->query( "ALTER TABLE {$table_product_history} ADD INDEX product_date (product_id, sync_date)" );
+		}
+	}
+
+	/**
+	 * Clean up old history records to prevent table bloat
+	 *
+	 * @param int $days Number of days to keep (default 90)
+	 * @return int Number of rows deleted
+	 */
+	public static function cleanup_old_history( $days = 90 ) {
+		global $wpdb;
+
+		$table_product_history = $wpdb->prefix . self::TABLE_PRODUCT_HISTORY;
+
+		$deleted = $wpdb->query(
+			$wpdb->prepare(
+				"DELETE FROM {$table_product_history}
+				WHERE sync_date < DATE_SUB(NOW(), INTERVAL %d DAY)",
+				$days
+			)
+		);
+
+		return $deleted !== false ? $deleted : 0;
+	}
+
+	/**
+	 * Clean up old sync logs
+	 *
+	 * @param int $days Number of days to keep (default 90)
+	 * @return int Number of rows deleted
+	 */
+	public static function cleanup_old_logs( $days = 90 ) {
+		global $wpdb;
+
+		$table_sync_logs = $wpdb->prefix . self::TABLE_SYNC_LOGS;
+
+		$deleted = $wpdb->query(
+			$wpdb->prepare(
+				"DELETE FROM {$table_sync_logs}
+				WHERE sync_date < DATE_SUB(NOW(), INTERVAL %d DAY)",
+				$days
+			)
+		);
+
+		return $deleted !== false ? $deleted : 0;
 	}
 
 	/**
